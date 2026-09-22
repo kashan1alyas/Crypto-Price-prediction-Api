@@ -7,6 +7,7 @@ from datetime import datetime
 import pytz
 from typing import List, Dict
 import json
+import asyncio
 import numpy as np
 from train import train_all_models
 from evaluate import evaluate_all_models
@@ -45,7 +46,6 @@ def setup_environment():
             
         # Verify environment variables
         required_vars = [
-            'COINGECKO_API_KEY',
             'DATABASE_URL',
             'MODEL_PATH',
             'CACHE_DIR'
@@ -65,10 +65,10 @@ def validate_and_prepare_data(symbol: str, timeframe: str) -> Dict:
     """Fetch, validate, and prepare data for a symbol and timeframe"""
     try:
         data_fetcher = DataFetcher()
-        data_validator = DataValidator()
+        data_validator = DataValidator(timeframe)
         
         # 1. Fetch data
-        df = data_fetcher.get_merged_data(symbol, timeframe)
+        df = asyncio.run(data_fetcher.get_merged_data(symbol, timeframe))
         if df is None or df.empty:
             raise ValueError(f"No data available for {symbol} ({timeframe})")
             

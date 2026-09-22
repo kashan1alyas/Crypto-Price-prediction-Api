@@ -1,246 +1,199 @@
+"""Automated model evaluation with historical performance tracking."""
+
 import os
 import sys
+import json
+import asyncio
 import logging
 import argparse
-import numpy as np
-import pandas as pd
-import torch
-from datetime import datetime, timedelta
-import pytz
-from typing import Dict, List, Tuple
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-import matplotlib.pyplot as plt
-from controllers.model_trainer import ModelTrainer
-from controllers.data_fetcher import DataFetcher
-from config import settings, FEATURE_LIST
+from pathlib import Path
+from datetime import datetime
+from typing import Dict, List
 
-# Setup logging
+import numpy as np
+import torch
+import pytz
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+from controllers.data_fetcher import DataFetcher
+from ml_models.bilstm_predictor import BiLSTMWithAttention, FEATURE_LIST
+from config import settings
+
+EVAL_HISTORY_PATH = Path(settings.MODEL_PATH) / "evaluation_history.json"
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('evaluation.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
+        logging.StreamHandler(sys.stdout),
+    ],
 )
 logger = logging.getLogger(__name__)
 
-class ModelEvaluator:
-    def __init__(self, symbol: str, timeframe: str):
-        self.symbol = symbol
-        self.timeframe = timeframe
-        self.model_dir = os.path.join(settings.MODEL_PATH, symbol)
-        self.model_path = os.path.join(self.model_dir, f'model_{timeframe}.pth')
-        self.scaler_path = os.path.join(self.model_dir, f'scaler_{timeframe}.joblib')
-        self.data_fetcher = DataFetcher()
-        
-    def load_model(self) -> Tuple[torch.nn.Module, Dict]:
-        """Load trained model and its metadata"""
-        if not os.path.exists(self.model_path):
-            raise FileNotFoundError(f"No trained model found for {self.symbol} ({self.timeframe})")
-            
-        # Load with weights_only=False to handle datetime objects
-        checkpoint = torch.load(self.model_path, weights_only=False, map_location=torch.device('cpu'))
-        
-        if 'model_config' not in checkpoint:
-            raise KeyError(f"'model_config' not found in checkpoint for {self.model_path}. Model may be outdated or saved incorrectly.")
-        model_config = checkpoint['model_config']
-        
-        if not all(k in model_config for k in ['input_size', 'hidden_size', 'num_layers']):
-            raise KeyError(f"'model_config' is missing required keys (input_size, hidden_size, num_layers) in {self.model_path}.")
-        
-        # Initialize model
-        from controllers.model_trainer import BiLSTMWithAttention
-        model = BiLSTMWithAttention(
-            input_size=model_config['input_size'],
-            hidden_size=model_config['hidden_size'],
-            num_layers=model_config['num_layers']
-        )
-        model.load_state_dict(checkpoint['model_state_dict'])
-        model.eval()
-        
-        return model, checkpoint
-        
-    def evaluate(self, days_back: int = 30) -> Dict:
-        """Evaluate model performance"""
-        try:
-            # Load model and data
-            model, checkpoint = self.load_model()
-            
-            # Get recent data
-            end_date = datetime.now(pytz.UTC)
-            start_date = end_date - timedelta(days=days_back)
-            
-            data = self.data_fetcher.get_merged_data(self.symbol, self.timeframe)
-            if data is None:
-                raise ValueError(f"Could not fetch data for {self.symbol}")
-                
-            # Filter data for evaluation period
-            data = data[data.index >= start_date]
-            if len(data) < 10:
-                raise ValueError(f"Insufficient data points for evaluation: {len(data)}")
-            
-            # Prepare features
-            X = data[FEATURE_LIST].values
-            y_true = data['Close'].values
-            
-            # Make predictions
-            predictions = []
-            uncertainties = []
-            
-            with torch.no_grad():
-                for i in range(len(X)):
-                    input_seq = torch.FloatTensor(X[max(0, i-60):i]).unsqueeze(0)
-                    pred, aleatoric, epistemic = model(input_seq, return_uncertainty=True)
-                    predictions.append(pred.item())
-                    uncertainties.append((aleatoric.item(), epistemic.item()))
-            
-            predictions = np.array(predictions)
-            uncertainties = np.array(uncertainties)
-            
-            # Calculate metrics
-            metrics = {
-                'mae': mean_absolute_error(y_true, predictions),
-                'rmse': np.sqrt(mean_squared_error(y_true, predictions)),
-                'r2': r2_score(y_true, predictions),
-                'mape': np.mean(np.abs((y_true - predictions) / y_true)) * 100,
-                'directional_accuracy': np.mean(np.sign(np.diff(predictions)) == np.sign(np.diff(y_true))) * 100
-            }
-            
-            # Calculate prediction intervals
-            confidence_intervals = []
-            for pred, (aleatoric, epistemic) in zip(predictions, uncertainties):
-                total_uncertainty = np.sqrt(aleatoric + epistemic)
-                confidence_intervals.append((
-                    pred - 1.96 * total_uncertainty,  # Lower bound (95% CI)
-                    pred + 1.96 * total_uncertainty   # Upper bound (95% CI)
-                ))
-            
-            # Plot results
-            self._plot_predictions(data.index, y_true, predictions, confidence_intervals)
-            
-            return {
-                'symbol': self.symbol,
-                'timeframe': self.timeframe,
-                'evaluation_period': {
-                    'start': start_date.isoformat(),
-                    'end': end_date.isoformat()
-                },
-                'metrics': metrics,
-                'model_info': {
-                    'training_date': checkpoint['training_date'].isoformat(),
-                    'epochs_trained': checkpoint['epoch'],
-                    'best_val_loss': checkpoint['val_loss']
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Evaluation failed: {str(e)}")
-            return {
-                'symbol': self.symbol,
-                'timeframe': self.timeframe,
-                'status': 'error',
-                'error': str(e)
-            }
-    
-    def _plot_predictions(self, dates, y_true, predictions, confidence_intervals):
-        """Plot actual vs predicted prices with confidence intervals"""
-        plt.figure(figsize=(12, 6))
-        
-        # Plot actual prices
-        plt.plot(dates, y_true, label='Actual', color='blue', alpha=0.7)
-        
-        # Plot predictions
-        plt.plot(dates, predictions, label='Predicted', color='red', alpha=0.7)
-        
-        # Plot confidence intervals
-        ci_lower = [ci[0] for ci in confidence_intervals]
-        ci_upper = [ci[1] for ci in confidence_intervals]
-        plt.fill_between(dates, ci_lower, ci_upper, color='red', alpha=0.2, label='95% CI')
-        
-        plt.title(f'{self.symbol} Price Predictions ({self.timeframe})')
-        plt.xlabel('Date')
-        plt.ylabel('Price (USD)')
-        plt.legend()
-        plt.grid(True)
-        
-        # Save plot
-        os.makedirs('plots', exist_ok=True)
-        plt.savefig(f'plots/{self.symbol}_{self.timeframe}_evaluation.png')
-        plt.close()
 
-def evaluate_all_models(symbols: List[str] = None, timeframes: List[str] = None, days_back: int = 30) -> List[Dict]:
-    """Evaluate all models"""
-    if symbols is None:
-        symbols = ["BTC", "ETH", "BNB", "XRP", "ADA", "DOGE", "SOL"]
-    if timeframes is None:
-        timeframes = settings.TIMEFRAME_OPTIONS
-        
-    results = []
-    
-    for symbol in symbols:
-        for timeframe in timeframes:
-            try:
-                evaluator = ModelEvaluator(symbol, timeframe)
-                result = evaluator.evaluate(days_back)
-                results.append(result)
-            except Exception as e:
-                logger.error(f"Failed to evaluate {symbol} ({timeframe}): {str(e)}")
-                results.append({
-                    'symbol': symbol,
-                    'timeframe': timeframe,
-                    'status': 'error',
-                    'error': str(e)
-                })
-    
-    return results
+def load_model(symbol: str, timeframe: str):
+    """Load trained model and config from checkpoint."""
+    model_path = Path(settings.MODEL_PATH) / symbol / f"model_{timeframe}.pth"
+    if not model_path.exists():
+        raise FileNotFoundError(f"No trained model at {model_path}")
 
-def main():
-    """Main entry point"""
-    parser = argparse.ArgumentParser(description='Evaluate cryptocurrency prediction models')
-    parser.add_argument('--symbols', nargs='+', help='Symbols to evaluate (default: all)')
-    parser.add_argument('--timeframes', nargs='+', choices=settings.TIMEFRAME_OPTIONS,
-                      help='Timeframes to evaluate (default: all)')
-    parser.add_argument('--days', type=int, default=30,
-                      help='Number of days to evaluate (default: 30)')
+    checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+    cfg = checkpoint.get("model_config", checkpoint.get("config", {}))
+
+    input_size = cfg.get("input_size", len(FEATURE_LIST))
+    hidden_size = cfg.get("hidden_size", 32)
+    num_layers = cfg.get("num_layers", 1)
+    dropout = cfg.get("dropout", 0.2)
+
+    model = BiLSTMWithAttention(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        dropout=dropout,
+    )
+    state = checkpoint.get("model_state_dict", checkpoint)
+    if "model_state_dict" in state:
+        state = state["model_state_dict"]
+    # Strip torch.compile wrapper prefix if present
+    state = {(k[10:] if k.startswith("_orig_mod.") else k): v for k, v in state.items()}
+    model.load_state_dict(state)
+    model.eval()
+    return model, checkpoint
+
+
+def evaluate(symbol: str, timeframe: str, days_back: int = 30) -> Dict:
+    """Evaluate a single model and return metrics."""
+    model, checkpoint = load_model(symbol, timeframe)
+    model_config = checkpoint.get("model_config", {})
+    lookback = model_config.get("lookback", 48)
+
+    fetcher = DataFetcher()
+    data = asyncio.run(fetcher.get_merged_data(symbol, timeframe))
+    if data is None or data.empty:
+        raise ValueError(f"No data fetched for {symbol} {timeframe}")
+
+    # Ensure all required features exist
+    missing = [f for f in FEATURE_LIST if f not in data.columns]
+    if missing:
+        raise ValueError(f"Missing features: {missing}")
+
+    data = data[list(FEATURE_LIST)].copy()
+    data = data.ffill().bfill()
+
+    close_all = asyncio.run(fetcher.get_merged_data(symbol, timeframe))
+    if close_all is not None and "Close" in close_all.columns:
+        close_series = close_all["Close"]
+    else:
+        raise ValueError("Cannot retrieve Close prices")
+
+    # Align and trim
+    common_idx = data.index.intersection(close_series.index)
+    data = data.loc[common_idx]
+    close_series = close_series.loc[common_idx]
+
+    # Holdout: last `days_back` days worth of rows
+    if hasattr(data.index, "to_pydatetime"):
+        cutoff = data.index.max() - np.timedelta64(days_back, "D")
+        holdout_mask = data.index >= cutoff
+    else:
+        holdout_mask = np.ones(len(data), dtype=bool)
+
+    data_holdout = data.loc[holdout_mask].copy()
+    close_holdout = close_series.loc[holdout_mask].values
+
+    if len(data_holdout) < lookback + 10:
+        raise ValueError(f"Not enough holdout data: {len(data_holdout)} rows (need {lookback + 10})")
+
+    values = data_holdout.values.astype(np.float32)
+    preds = []
+
+    with torch.no_grad():
+        for i in range(lookback, len(values)):
+            seq = values[i - lookback : i]
+            x = torch.FloatTensor(seq).unsqueeze(0)
+            pred = model(x).item()
+            # Model predicts percentage return; convert to price
+            current_close = close_holdout[i - 1] if i - 1 >= 0 else close_holdout[0]
+            predicted_price = current_close * (1 + pred)
+            preds.append(predicted_price)
+
+    actual = close_holdout[lookback:]
+    preds = np.array(preds)
+
+    # Directional accuracy
+    actual_dir = np.sign(np.diff(actual))
+    pred_dir = np.sign(np.diff(preds))
+    directional_accuracy = float(np.mean(actual_dir == pred_dir) * 100)
+
+    mae = float(mean_absolute_error(actual, preds))
+    rmse = float(np.sqrt(mean_squared_error(actual, preds)))
+    safe_actual = np.maximum(np.abs(actual), 1e-8)
+    mape = float(np.mean(np.abs((actual - preds) / safe_actual)) * 100)
+
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "timestamp": datetime.now(pytz.UTC).isoformat(),
+        "holdout_days": days_back,
+        "holdout_rows": len(actual),
+        "model_config": {
+            "input_size": model_config.get("input_size"),
+            "hidden_size": model_config.get("hidden_size"),
+            "num_layers": model_config.get("num_layers"),
+        },
+        "metrics": {
+            "mae": round(mae, 6),
+            "rmse": round(rmse, 6),
+            "mape": round(mape, 4),
+            "directional_accuracy": round(directional_accuracy, 2),
+        },
+    }
+
+
+def append_to_history(entry: Dict) -> None:
+    """Append evaluation result to the historical ledger."""
+    EVAL_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    if EVAL_HISTORY_PATH.exists():
+        with open(EVAL_HISTORY_PATH, "r") as f:
+            history = json.load(f)
+    else:
+        history = []
+
+    history.append(entry)
+
+    with open(EVAL_HISTORY_PATH, "w") as f:
+        json.dump(history, f, indent=2)
+
+    logger.info(f"Appended result to {EVAL_HISTORY_PATH}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Evaluate BiLSTM crypto models")
+    parser.add_argument("--symbol", type=str, default="BTC", help="Crypto symbol (default: BTC)")
+    parser.add_argument("--timeframe", type=str, default="1h", help="Timeframe (default: 1h)")
+    parser.add_argument("--days", type=int, default=30, help="Holdout period in days (default: 30)")
     args = parser.parse_args()
-    
+
     try:
-        logger.info("Starting model evaluation")
-        results = evaluate_all_models(args.symbols, args.timeframes, args.days)
-        
-        # Print summary
-        success_count = sum(1 for r in results if 'status' not in r or r['status'] != 'error')
-        total_count = len(results)
-        
-        logger.info("\nEvaluation Summary:")
-        logger.info(f"Total models evaluated: {total_count}")
-        logger.info(f"Successful: {success_count}")
-        logger.info(f"Failed: {total_count - success_count}")
-        
-        # Print metrics for successful evaluations
-        logger.info("\nModel Performance:")
-        for result in results:
-            if 'metrics' in result:
-                logger.info(f"\n{result['symbol']} ({result['timeframe']}):")
-                logger.info(f"MAE: {result['metrics']['mae']:.4f}")
-                logger.info(f"RMSE: {result['metrics']['rmse']:.4f}")
-                logger.info(f"R²: {result['metrics']['r2']:.4f}")
-                logger.info(f"MAPE: {result['metrics']['mape']:.2f}%")
-                logger.info(f"Directional Accuracy: {result['metrics']['directional_accuracy']:.2f}%")
-        
-        # Print errors for failed evaluations
-        if success_count < total_count:
-            logger.info("\nFailed Evaluations:")
-            for result in results:
-                if 'status' in result and result['status'] == 'error':
-                    logger.info(f"{result['symbol']} ({result['timeframe']}): {result['error']}")
-        
-        logger.info("\nEvaluation completed")
-        
+        logger.info(f"Evaluating {args.symbol} {args.timeframe} (holdout={args.days}d)")
+        result = evaluate(args.symbol, args.timeframe, args.days)
+
+        m = result["metrics"]
+        logger.info("Metrics:")
+        logger.info(f"  Directional Accuracy: {m['directional_accuracy']:.2f}%")
+        logger.info(f"  MAE:  {m['mae']:.6f}")
+        logger.info(f"  RMSE: {m['rmse']:.6f}")
+        logger.info(f"  MAPE: {m['mape']:.4f}%")
+
+        append_to_history(result)
+        logger.info("Done")
+
     except Exception as e:
-        logger.error(f"Evaluation failed: {str(e)}")
+        logger.error(f"Evaluation failed: {e}")
         sys.exit(1)
 
+
 if __name__ == "__main__":
-    main() 
+    main()

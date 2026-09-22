@@ -54,8 +54,11 @@ TIMEFRAME_OPTIONS = TIMEFRAMES
 
 # Technical Indicators
 TECHNICAL_INDICATORS = [
-    "RSI", "MACD", "BB_UPPER", "BB_MIDDLE", "BB_LOWER",
-    "EMA_9", "SMA_20", "ATR", "OBV"
+    "RSI_14", "Momentum", "ADX", "CCI", "Stoch_%K", "Stoch_%D", "MFI",
+    "ATR", "Volatility", "OBV", "VWAP", "Volume_Profile",
+    "Momentum_5", "Momentum_10", "Momentum_20",
+    "Market_Regime", "Volatility_Regime",
+    "Hour_Sin", "Hour_Cos", "DayOfWeek_Sin", "DayOfWeek_Cos"
 ]
 
 # Prediction Configuration
@@ -69,7 +72,7 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 # Performance Thresholds
 MIN_ACCURACY = 0.55
 MAX_LOSS = 0.1
-MIN_DATA_POINTS = 1000
+MIN_DATA_POINTS = 400
 
 # API Configuration
 API_V1_PREFIX = "/api/v1"
@@ -127,7 +130,7 @@ TIMEFRAME_MAP = {
         "macd_slow": 26,
         "macd_sign": 9,
         "bb_std_dev": 2,
-        "min_samples": 672,  # 7 days * 24 hours/day * 2 samples/hour
+        "min_samples": 400,  # Reduced: ~6 days of 30m data (was 672)
         "gap_threshold": 3600,  # 1 hour in seconds
         "model_params": {
             "hidden_size": 128,
@@ -148,7 +151,7 @@ TIMEFRAME_MAP = {
         "macd_slow": 26,
         "macd_sign": 9,
         "bb_std_dev": 2,
-        "min_samples": 720,  # 30 days * 24 hours/day
+        "min_samples": 400,  # Reduced: ~17 days of hourly data (was 720)
         "gap_threshold": 7200,  # 2 hours in seconds
         "model_params": {
             "hidden_size": 128,
@@ -169,7 +172,7 @@ TIMEFRAME_MAP = {
         "macd_slow": 26,
         "macd_sign": 9,
         "bb_std_dev": 2,
-        "min_samples": 540,  # 90 days * 6 samples/day
+        "min_samples": 300,  # Reduced: ~50 days of 4h data (was 540)
         "gap_threshold": 28800,  # 8 hours in seconds
         "model_params": {
             "hidden_size": 128,
@@ -190,7 +193,7 @@ TIMEFRAME_MAP = {
         "macd_slow": 26,
         "macd_sign": 9,
         "bb_std_dev": 2,
-        "min_samples": 700,  # About 2 years of daily data
+        "min_samples": 300,  # Reduced: ~10 months of daily data (was 700)
         "gap_threshold": 172800,  # 48 hours in seconds
         "model_params": {
             "hidden_size": 128,
@@ -216,13 +219,13 @@ CACHE_TIMEOUT: Dict[str, int] = {
 }
 
 # Data validation settings
-MIN_DATA_POINTS = int(os.getenv('MIN_DATA_POINTS', '1000'))
+MIN_DATA_POINTS = int(os.getenv('MIN_DATA_POINTS', '400'))
 MAX_MISSING_PERCENTAGE = float(os.getenv('MAX_MISSING_PERCENTAGE', '0.1'))
 OUTLIER_STD_THRESHOLD = float(os.getenv('OUTLIER_STD_THRESHOLD', '3.0'))
 MIN_DATA_QUALITY_SCORE_PREDICT = float(os.getenv('MIN_DATA_QUALITY_SCORE_PREDICT', '0.6'))
 
 # Model training settings
-MIN_TRAINING_SAMPLES = int(os.getenv('MIN_TRAINING_SAMPLES', '800'))
+MIN_TRAINING_SAMPLES = int(os.getenv('MIN_TRAINING_SAMPLES', '400'))
 
 # API rate limiting
 MAX_REQUESTS_PER_MINUTE = int(os.getenv('MAX_REQUESTS_PER_MINUTE', '30'))

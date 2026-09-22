@@ -46,6 +46,7 @@ from controllers.data_quality import DataQualityMetrics
 from ml_models.bilstm_predictor import BiLSTMWithAttention
 from controllers.early_stopping import EarlyStopping  # Add this import
 from controllers.timeframe_config import TIMEFRAME_MAP  # Add this import at the top with other imports
+from controllers.model_versioning import get_active_schema, get_active_input_size
 
 # Type Hinting
 from typing import Tuple, Dict, Any, Optional, List # List was missing in my previous example
@@ -53,6 +54,149 @@ from typing import Tuple, Dict, Any, Optional, List # List was missing in my pre
 # Specific torch.nn components if you prefer explicit imports over nn.Module
 # from torch.nn import Linear, ReLU, Sigmoid, Tanh, Dropout, BatchNorm1d, LSTM, GRU, RNN # etc. 
 # The generic `import torch.nn as nn` is usually sufficient if you use `nn.Linear`, `nn.LSTM`.
+
+
+# ---------------------------------------------------------------------------
+# In-memory model cache — avoids disk I/O on every /api/predict/ request
+# ---------------------------------------------------------------------------
+import threading
+
+_MODEL_CACHE: dict[str, dict] = {}
+_CACHE_LOCK = threading.Lock()
+
+
+def _unwrap_model(model):
+    """Return the underlying module if wrapped by torch.compile."""
+    return getattr(model, "_orig_mod", model)
+
+
+def load_or_get_model(symbol: str, timeframe: str) -> tuple:
+    """Return (model, feature_scaler, config_dict) from cache or disk.
+
+    The model is loaded from disk only on the first call for each
+    (symbol, timeframe) pair.  Subsequent calls return the cached instance.
+    """
+    key = f"{symbol}_{timeframe}"
+
+    with _CACHE_LOCK:
+        if key in _MODEL_CACHE:
+            entry = _MODEL_CACHE[key]
+            return entry["model"], entry["feature_scaler"], entry["config"]
+
+    # Not cached — load from disk outside the lock (slow I/O)
+    model_dir = os.path.join(MODEL_PATH, symbol)
+    model_path = os.path.join(model_dir, f"model_{timeframe}.pth")
+    optimized_path = os.path.join(model_dir, f"model_{timeframe}_optimized.pt")
+
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"No trained model at {model_path}")
+
+    # Prefer TorchScript-optimized model for fast inference
+    if os.path.exists(optimized_path):
+        try:
+            model = torch.jit.load(optimized_path, map_location=torch.device('cpu'))
+            model = model.to(torch.float32)
+            model.eval()
+            logger.info(f"Loaded optimized TorchScript model for {symbol} {timeframe}")
+
+            # Load scaler
+            scaler_path = os.path.join(model_dir, f"scaler_{timeframe}.joblib")
+            feature_scaler = None
+            if os.path.exists(scaler_path):
+                feature_scaler = joblib.load(scaler_path)
+            else:
+                feat_path = os.path.join(model_dir, "feature_scaler.joblib")
+                if os.path.exists(feat_path):
+                    feature_scaler = joblib.load(feat_path)
+
+            # Still need config from the .pth file for lookback/input_size etc.
+            checkpoint = torch.load(model_path, map_location=torch.device('cpu'), weights_only=False)
+            config = checkpoint.get('config', {})
+            if not config:
+                config = checkpoint.get('model_config', {})
+            if 'feature_names' not in config:
+                config['feature_names'] = config.get('feature_list', [])
+
+            with _CACHE_LOCK:
+                _MODEL_CACHE[key] = {
+                    "model": model,
+                    "feature_scaler": feature_scaler,
+                    "config": config,
+                }
+
+            logger.info(f"Cached optimized model for {symbol} {timeframe} (input_size={config.get('input_size', 28)})")
+            return model, feature_scaler, config
+        except Exception as e:
+            logger.warning(f"Failed to load optimized model ({e}), falling back to .pth")
+
+    # Fallback: load from .pth checkpoint
+
+    checkpoint = torch.load(model_path, map_location=torch.device('cpu'), weights_only=False)
+
+    config = checkpoint.get('config', {})
+    if not config:
+        config = checkpoint.get('model_config', {})
+    # Ensure feature_names is in config (backward compatibility with old checkpoints)
+    if 'feature_names' not in config:
+        config['feature_names'] = config.get('feature_list', [])
+
+    input_size = config.get('input_size', 28)
+    hidden_size = config.get('hidden_size', 32)
+    num_layers = config.get('num_layers', 1)
+    dropout = float(config.get('dropout', 0.2))
+
+    model = BiLSTMWithAttention(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        dropout=dropout,
+    )
+    raw_dict = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+    clean_dict = {k.replace("_orig_mod.", ""): v for k, v in raw_dict.items()}
+    model.load_state_dict(clean_dict)
+    model = model.to(torch.float32)
+    model.eval()
+
+    # Load scaler
+    scaler_path = os.path.join(model_dir, f"scaler_{timeframe}.joblib")
+    feature_scaler = None
+    if os.path.exists(scaler_path):
+        feature_scaler = joblib.load(scaler_path)
+    else:
+        feat_path = os.path.join(model_dir, "feature_scaler.joblib")
+        if os.path.exists(feat_path):
+            feature_scaler = joblib.load(feat_path)
+
+    with _CACHE_LOCK:
+        _MODEL_CACHE[key] = {
+            "model": model,
+            "feature_scaler": feature_scaler,
+            "config": config,
+        }
+
+    logger.info(f"Cached model for {symbol} {timeframe} (input_size={input_size})")
+    return model, feature_scaler, config
+
+
+def clear_model_cache(symbol: str | None = None, timeframe: str | None = None) -> None:
+    """Invalidate cached model(s).
+
+    Called after training so that the next prediction request loads the
+    freshly-trained weights from disk.
+    """
+    with _CACHE_LOCK:
+        if symbol is None and timeframe is None:
+            _MODEL_CACHE.clear()
+            logger.info("Model cache cleared (all)")
+            return
+        keys_to_remove = [
+            k for k in _MODEL_CACHE
+            if (symbol is None or k.startswith(f"{symbol}_"))
+            and (timeframe is None or k.endswith(f"_{timeframe}"))
+        ]
+        for k in keys_to_remove:
+            del _MODEL_CACHE[k]
+            logger.info(f"Model cache evicted: {k}")
 
 
 
@@ -105,13 +249,15 @@ PRICE_CACHE = TTLCache(maxsize=10, ttl=60)
 COINGECKO_ID_MAP = {
     "BTC": "bitcoin",
     "ETH": "ethereum",
-    "XRP": "ripple"
+    "XRP": "ripple",
+    "TRX": "tron"
 }
 
 # Set of known cryptocurrency symbols
 CRYPTO_SYMBOLS = {
     'BTC', 'ETH', 'XRP', 'LTC', 'BCH', 'ADA', 'DOT', 'LINK', 'BNB', 'XLM',
-    'USDT', 'DOGE', 'UNI', 'AAVE', 'SOL', 'MATIC', 'AVAX', 'ATOM', 'ALGO', 'FTM'
+    'USDT', 'DOGE', 'UNI', 'AAVE', 'SOL', 'MATIC', 'AVAX', 'ATOM', 'ALGO', 'FTM',
+    'TRX'
 }
 
 def get_hyperparameters(symbol: str, timeframe: str) -> dict:
@@ -816,60 +962,16 @@ def calculate_prediction_probability(data: pd.DataFrame, prediction: float, mode
             }
             tech_probs.append(rsi_signal)
         
-        # MACD Analysis
-        if all(col in data.columns for col in ['MACD', 'MACD_Signal']):
-            macd = data['MACD'].iloc[-1]
-            macd_signal = data['MACD_Signal'].iloc[-1]
-            macd_prev = data['MACD'].iloc[-2]
-            macd_signal_prev = data['MACD_Signal'].iloc[-2]
-            
-            # Detect crossovers and trend strength
-            crossover = (macd > macd_signal and macd_prev < macd_signal_prev) or \
-                       (macd < macd_signal and macd_prev > macd_signal_prev)
-            trend_strength = abs(macd - macd_signal) / abs(macd_signal) if abs(macd_signal) > 0 else 0
-            
-            macd_signal = {
-                'indicator': 'MACD',
-                'value': float(macd),
-                'signal_line': float(macd_signal),
-                'signal': 'bullish_crossover' if macd > macd_signal and macd_prev < macd_signal_prev else
-                         'bearish_crossover' if macd < macd_signal and macd_prev > macd_signal_prev else
-                         'bullish_trend' if macd > macd_signal else 'bearish_trend',
-                'strength': 0.65 if crossover else 0.4 + min(0.3, trend_strength),
-                'trend_strength': float(trend_strength)
+        # Momentum Analysis
+        if 'Momentum' in data.columns:
+            momentum_val = data['Momentum'].iloc[-1]
+            momentum_signal = {
+                'indicator': 'Momentum',
+                'value': float(momentum_val) if not np.isnan(momentum_val) else 0.0,
+                'signal': 'bullish' if momentum_val > 0 else 'bearish',
+                'strength': min(0.7, abs(momentum_val) * 10) if not np.isnan(momentum_val) else 0.4,
             }
-            tech_probs.append(macd_signal)
-        
-        # Bollinger Bands Analysis
-        bb_cols = {
-            'upper': ['Bollinger_Upper', 'BB_upper'],
-            'lower': ['Bollinger_Lower', 'BB_lower'],
-            'middle': ['Bollinger_middle', 'BB_middle']
-        }
-        
-        bb_values = {}
-        for key, possible_cols in bb_cols.items():
-            for col in possible_cols:
-                if col in data.columns:
-                    bb_values[key] = data[col].iloc[-1]
-                    break
-        
-        if len(bb_values) >= 2:
-            bb_position = 'above_upper' if current_price > bb_values.get('upper', float('inf')) else \
-                         'below_lower' if current_price < bb_values.get('lower', float('-inf')) else \
-                         'within_bands'
-            
-            bb_signal = {
-                'indicator': 'BollingerBands',
-                'position': bb_position,
-                'signal': 'reversal' if (bb_position == 'above_upper' and prediction < current_price) or
-                                      (bb_position == 'below_lower' and prediction > current_price) else
-                         'continuation',
-                'strength': 0.6 if bb_position != 'within_bands' else 0.4,
-                'bandwidth': float(bb_values.get('upper', 0) - bb_values.get('lower', 0)) / \
-                           bb_values.get('middle', 1) if bb_values.get('middle', 0) != 0 else 0
-            }
-            tech_probs.append(bb_signal)
+            tech_probs.append(momentum_signal)
         
         # Volume Analysis
         if 'Volume' in data.columns and len(data) >= 20:
@@ -927,8 +1029,7 @@ def calculate_prediction_probability(data: pd.DataFrame, prediction: float, mode
             'timeframe_factor': timeframe_factor,
             'available_indicators': {
                 'rsi': rsi_value is not None,
-                'macd': 'MACD' in data.columns and 'MACD_Signal' in data.columns,
-                'bollinger': len(bb_values) >= 2,
+                'momentum': 'Momentum' in data.columns,
                 'volume': 'Volume' in data.columns
             },
             'weights': {
@@ -959,45 +1060,25 @@ async def predict_next_price(symbol, timeframe="24h"):
     """Predict the next price for a given symbol and timeframe"""
     try:
         # Get model directory path
-        model_dir = os.path.join(MODEL_PATH, f"{symbol}_{timeframe}")
-        model_path = os.path.join(model_dir, "model.pth")
+        model_dir = os.path.join(MODEL_PATH, symbol)
+        model_path = os.path.join(model_dir, f"model_{timeframe}.pth")
         
         if not os.path.exists(model_path):
-            raise FileNotFoundError(f"No trained model found for {symbol} {timeframe}")
+            return {
+                "status": "no_model",
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "error": f"No trained model found for {symbol} {timeframe}"
+            }
         
-        # Load checkpoint with numpy scalar support
-        checkpoint = torch.load(model_path, map_location=torch.device('cpu'), weights_only=False)
+        # Load model from cache (avoids repeated disk I/O)
+        model, feature_scaler, config = load_or_get_model(symbol, timeframe)
         
-        # Get model configuration
-        config = checkpoint.get('config', {})
-        if not config:
-            config = checkpoint.get('model_config', {})
-        
-        # Initialize model with loaded configuration
-        input_size = config.get('input_size', 26)
-        hidden_size = config.get('hidden_size', 128)
-        num_layers = config.get('num_layers', 2)
-        dropout = float(config.get('dropout', 0.3))
         lookback = config.get('lookback', 72)
-        
-        # Initialize model
-        model = BiLSTMWithAttention(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            dropout=dropout
-        )
-        
-        # Load model state
-        state_dict = checkpoint.get('model_state_dict', checkpoint)
-        if isinstance(state_dict, dict) and 'model_state_dict' in state_dict:
-            state_dict = state_dict['model_state_dict']
-        model.load_state_dict(state_dict)
-        model.eval()
-        
-        # Load scalers
-        feature_scaler = joblib.load(os.path.join(model_dir, "feature_scaler.joblib"))
-        target_scaler = joblib.load(os.path.join(model_dir, "target_scaler.joblib"))
+        prediction_mode = config.get('prediction_mode', 'price')
+        input_size = config.get('input_size', 28)
+        hidden_size = config.get('hidden_size', 32)
+        num_layers = config.get('num_layers', 1)
         
         # Get latest data
         latest_data = await get_latest_data(symbol, timeframe)
@@ -1008,10 +1089,30 @@ async def predict_next_price(symbol, timeframe="24h"):
         # Prepare features
         features_df, _ = await prepare_features(symbol, timeframe)
         feature_list = get_feature_list_for_model(features_df)
+
+        # Feature schema validation: fetch expected schema from registry
+        expected_features = get_active_schema(str(settings.MODEL_PATH), symbol, timeframe)
+        if expected_features:
+            # Strict column selection and ordering to match trained model
+            missing = [f for f in expected_features if f not in features_df.columns]
+            if missing:
+                raise ValueError(
+                    f"Feature schema mismatch for {symbol} {timeframe}: "
+                    f"missing features {missing} in input data. "
+                    f"Expected schema ({len(expected_features)} features): {expected_features}"
+                )
+            # Select and order columns exactly as the model expects
+            features_df = features_df[expected_features]
+            feature_list = expected_features
+            logger.info(f"Using registry schema for {symbol} {timeframe}: {len(feature_list)} features")
+        
         features = features_df[feature_list].values
         
         # Scale features
-        scaled_features = feature_scaler.transform(features)
+        if feature_scaler is not None:
+            scaled_features = feature_scaler.transform(features)
+        else:
+            scaled_features = features
         
         # Create sequence for prediction (take last lookback points)
         X = scaled_features[-lookback:].reshape(1, lookback, -1)  # Let reshape infer the last dimension
@@ -1020,14 +1121,39 @@ async def predict_next_price(symbol, timeframe="24h"):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = model.to(device)
         
-        with torch.no_grad():
-            X_tensor = torch.FloatTensor(X).to(device)
-            prediction = model(X_tensor)
+        with torch.inference_mode():
+            input_tensor = torch.from_numpy(X.astype(np.float32)).contiguous().to(device)
+            prediction = model(input_tensor)
             prediction = prediction.cpu().numpy()
         
         # Inverse transform prediction
-        prediction_denorm = target_scaler.inverse_transform(prediction.reshape(-1, 1))
-        predicted_price = float(prediction_denorm[-1, 0])
+        predicted_return = None
+        if prediction_mode == 'return':
+            # Model predicts raw percentage return (target was NOT scaled during training)
+            # Simply extract the scalar value and clamp to reasonable range
+            predicted_return = float(prediction[-1, 0]) if prediction.ndim > 1 else float(prediction[0])
+            # Clamp to [-0.1, 0.1] i.e. ±10% max
+            predicted_return = max(-0.1, min(0.1, predicted_return))
+        else:
+            # Legacy mode: model predicts absolute price
+            if target_scaler is not None:
+                prediction_denorm = target_scaler.inverse_transform(prediction.reshape(-1, 1))
+                predicted_price = float(prediction_denorm[-1, 0])
+            elif feature_scaler is not None:
+                n_features = len(feature_list)
+                padded = np.concatenate([prediction.reshape(-1, 1), np.zeros((1, n_features - 1))], axis=1)
+                prediction_denorm = feature_scaler.inverse_transform(padded)
+                predicted_price = float(prediction_denorm[0, 0])
+            else:
+                predicted_price = float(prediction[-1, 0]) if prediction.ndim > 1 else float(prediction[0])
+        
+        # Get last actual price and next timestamp
+        last_price = float(latest_data['Close'].iloc[-1])
+        next_timestamp = get_next_timestamp(latest_data.index[-1], timeframe)
+        
+        # Derive predicted price from return if needed
+        if prediction_mode == 'return' and predicted_return is not None:
+            predicted_price = last_price * (1.0 + predicted_return)
         
         # Calculate confidence metrics
         support_resistance = detect_support_resistance(latest_data)
@@ -1039,15 +1165,12 @@ async def predict_next_price(symbol, timeframe="24h"):
             timeframe
         )
         
-        # Get last actual price and next timestamp
-        last_price = float(latest_data['Close'].iloc[-1])
-        next_timestamp = get_next_timestamp(latest_data.index[-1], timeframe)
-        
         # Prepare result
         result = {
             "symbol": symbol,
             "timeframe": timeframe,
             "predicted_price": predicted_price,
+            "predicted_return": predicted_return if prediction_mode == 'return' else None,
             "last_price": last_price,
             "prediction_time": next_timestamp.isoformat(),
             "current_time": datetime.now(pytz.UTC).isoformat(),
@@ -1070,16 +1193,14 @@ async def predict_next_price(symbol, timeframe="24h"):
 
 def get_feature_list_for_model(features_df: pd.DataFrame) -> list[str]:
     """Get the list of features to use for model input"""
-    # Define the complete list of 26 features
     feature_list = [
         'Open', 'High', 'Low', 'Close', 'Volume',
-        'SMA_20', 'EMA_20', 'RSI_14',
-        'MACD', 'MACD_Signal', 'MACD_Hist',
-        'Bollinger_middle', 'Bollinger_Upper', 'Bollinger_Lower',
-        'ATR', 'OBV', 'VWAP',
-        'CCI', 'Stoch_%K', 'Stoch_%D', 'MFI',
-        'Momentum', 'Volatility', 'Lag1',
-        'Sentiment_Up', 'ADX'
+        'RSI_14', 'Momentum', 'ADX', 'CCI', 'Stoch_%K', 'Stoch_%D', 'MFI',
+        'ATR', 'Volatility',
+        'OBV', 'VWAP', 'Volume_Profile',
+        'Momentum_5', 'Momentum_10', 'Momentum_20',
+        'Market_Regime', 'Volatility_Regime',
+        'Hour_Sin', 'Hour_Cos', 'DayOfWeek_Sin', 'DayOfWeek_Cos',
     ]
     
     # Verify all features are present in the DataFrame
@@ -1089,13 +1210,11 @@ def get_feature_list_for_model(features_df: pd.DataFrame) -> list[str]:
         # Calculate any missing features
         for feature in missing_features:
             if feature == 'Momentum':
-                features_df['Momentum'] = features_df['Close'].diff(10)
+                features_df['Momentum'] = features_df['Close'].pct_change(10)
             elif feature == 'Volatility':
-                features_df['Volatility'] = features_df['Close'].rolling(window=20).std()
-            elif feature == 'Lag1':
-                features_df['Lag1'] = features_df['Close'].shift(1)
-            elif feature == 'Sentiment_Up':
-                features_df['Sentiment_Up'] = 0.5  # Default neutral sentiment
+                vol = features_df['Close'].rolling(window=20).std()
+                vol_mean = features_df['Close'].rolling(window=20).mean()
+                features_df['Volatility'] = vol / vol_mean
             elif feature == 'ADX':
                 # Calculate ADX if missing
                 plus_dm = features_df['High'].diff()
@@ -1112,6 +1231,35 @@ def get_feature_list_for_model(features_df: pd.DataFrame) -> list[str]:
                 minus_di = 100 * (minus_dm.rolling(window=14).mean() / (atr + 1e-8))
                 dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di + 1e-8))
                 features_df['ADX'] = dx.rolling(window=14).mean()
+            elif feature == 'Volume_Profile':
+                vol_ma = features_df['Volume'].rolling(window=20).mean()
+                features_df['Volume_Profile'] = features_df['Volume'] / vol_ma
+            elif feature == 'Momentum_5':
+                features_df['Momentum_5'] = features_df['Close'].pct_change(5)
+            elif feature == 'Momentum_10':
+                features_df['Momentum_10'] = features_df['Close'].pct_change(10)
+            elif feature == 'Momentum_20':
+                features_df['Momentum_20'] = features_df['Close'].pct_change(20)
+            elif feature == 'Market_Regime':
+                sma_short = features_df['Close'].rolling(10).mean()
+                sma_long = features_df['Close'].rolling(30).mean()
+                features_df['Market_Regime'] = np.where(sma_short > sma_long, 1.0,
+                    np.where(sma_short < sma_long, -1.0, 0.0))
+            elif feature == 'Volatility_Regime':
+                ret_vol = features_df['Close'].pct_change().rolling(20).std()
+                vol_median = ret_vol.rolling(50).median()
+                features_df['Volatility_Regime'] = np.where(ret_vol > vol_median, 1.0, -1.0)
+            elif feature in ('Hour_Sin', 'Hour_Cos', 'DayOfWeek_Sin', 'DayOfWeek_Cos'):
+                if hasattr(features_df.index, 'hour'):
+                    features_df['Hour_Sin'] = np.sin(2 * np.pi * features_df.index.hour / 24)
+                    features_df['Hour_Cos'] = np.cos(2 * np.pi * features_df.index.hour / 24)
+                    features_df['DayOfWeek_Sin'] = np.sin(2 * np.pi * features_df.index.dayofweek / 7)
+                    features_df['DayOfWeek_Cos'] = np.cos(2 * np.pi * features_df.index.dayofweek / 7)
+                else:
+                    features_df['Hour_Sin'] = 0.0
+                    features_df['Hour_Cos'] = 1.0
+                    features_df['DayOfWeek_Sin'] = 0.0
+                    features_df['DayOfWeek_Cos'] = 1.0
     
     # Fill any NaN values that might have been introduced
     features_df = features_df.ffill().bfill()
@@ -1120,7 +1268,11 @@ def get_feature_list_for_model(features_df: pd.DataFrame) -> list[str]:
     return feature_list
 
 async def prepare_features(symbol: str, timeframe: str) -> tuple:
-    """Prepare features for model input with proper shapes"""
+    """Prepare features for model input with proper shapes.
+    
+    For inference, slices only the minimum required rows to avoid generating
+    indicator history over hundreds of unnecessary candles.
+    """
     try:
         # Get historical data
         data_fetcher = DataFetcher()
@@ -1129,6 +1281,21 @@ async def prepare_features(symbol: str, timeframe: str) -> tuple:
         if df is None or df.empty:
             logger.error(f"Failed to fetch data for {symbol} {timeframe}")
             raise ValueError(f"No data available for {symbol} {timeframe}")
+        
+        # For inference, slice only the minimum required rows:
+        # lookback (default 72) + maximum indicator warmup window (30 for SMA long) = ~80 rows
+        # This avoids computing rolling indicators over hundreds of unnecessary candles
+        max_indicator_window = 30  # Largest rolling window (SMA 30 for Market_Regime)
+        lookback = 72  # Default; will be overridden by model config if available
+        try:
+            _, _, config = load_or_get_model(symbol, timeframe)
+            lookback = config.get('lookback', 72)
+        except Exception:
+            pass
+        min_rows = lookback + max_indicator_window + 10  # small safety margin
+        if len(df) > min_rows:
+            df = df.iloc[-min_rows:]
+            logger.debug(f"Pruned inference data to {len(df)} rows (lookback={lookback}, indicator_window={max_indicator_window})")
         
         # Forward fill missing values, then backward fill any remaining
         df = df.ffill().bfill()
@@ -1253,7 +1420,9 @@ async def get_model(symbol: str, timeframe: str = "24h") -> tuple:
                     num_layers=config['num_layers'],
                     dropout=config['dropout']
                 )
-                model.load_state_dict(checkpoint['model_state_dict'])
+                raw_dict = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+                clean_dict = {k.replace("_orig_mod.", ""): v for k, v in raw_dict.items()}
+                model.load_state_dict(clean_dict)
             except Exception as e:
                 logger.error(f"Error loading model: {str(e)}")
                 raise
@@ -1293,7 +1462,7 @@ async def get_model(symbol: str, timeframe: str = "24h") -> tuple:
         
         # Save model checkpoint with config
         checkpoint = {
-            'model_state_dict': model.state_dict(),
+            'model_state_dict': _unwrap_model(model).state_dict(),
             'config': {
                 'input_size': model.input_size,
                 'hidden_size': model.hidden_size,
@@ -1420,7 +1589,8 @@ def mean_absolute_percentage_error(y_true, y_pred):
     """Calculate mean absolute percentage error"""
     y_true = np.array(y_true).ravel()
     y_pred = np.array(y_pred).ravel()
-    return np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+    safe_denom = np.maximum(np.abs(y_true), 1e-8)
+    return np.mean(np.abs((y_true - y_pred) / safe_denom)) * 100
 
 def get_data_stats(data_tensor: torch.Tensor, target_tensor: torch.Tensor) -> dict:
     """Calculate basic statistics for data and target tensors."""
@@ -1549,7 +1719,7 @@ def train_model(X_train, y_train, X_val, y_val, model, timeframe, symbol, batch_
                 val_predictions_denorm = np.array(val_predictions_scaled)
                 val_actuals_denorm = np.array(val_actuals_scaled)
             
-            safe_actuals = np.where(val_actuals_denorm == 0, 1e-8, val_actuals_denorm)
+            safe_actuals = np.maximum(np.abs(val_actuals_denorm), 1e-8)
             val_mape = np.mean(np.abs((val_actuals_denorm - val_predictions_denorm) / safe_actuals)) * 100
             val_r2 = r2_score(val_actuals_denorm, val_predictions_denorm)
             val_rmse = np.sqrt(mean_squared_error(val_actuals_denorm, val_predictions_denorm))
@@ -1573,7 +1743,7 @@ def train_model(X_train, y_train, X_val, y_val, model, timeframe, symbol, batch_
             # Track absolute best model state based on validation loss
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
-                best_model_state = copy.deepcopy(model.state_dict())
+                best_model_state = copy.deepcopy(_unwrap_model(model).state_dict())
                 best_epoch = epoch
                 best_metrics = current_metrics.copy()
                 logger.info(f"New absolute best model at epoch {epoch}: "
@@ -1605,7 +1775,7 @@ def train_model(X_train, y_train, X_val, y_val, model, timeframe, symbol, batch_
                 torch.save(checkpoint, os.path.join(model_dir, "model.pth"))
             
             # Check early stopping
-            if early_stopping.step(avg_val_loss, epoch, current_metrics, copy.deepcopy(model.state_dict())):
+            if early_stopping.step(avg_val_loss, epoch, current_metrics, copy.deepcopy(_unwrap_model(model).state_dict())):
                 logger.info(f"Early stopping triggered at epoch {epoch}. "
                           f"Best model was from epoch {best_epoch} with "
                           f"Val Loss: {best_val_loss:.4f}, "
@@ -1617,7 +1787,9 @@ def train_model(X_train, y_train, X_val, y_val, model, timeframe, symbol, batch_
                            f"Val MAPE: {val_mape:.2f}%, Val R2: {val_r2:.4f}, LR: {scheduler.get_last_lr()[0]:.2e}")
         
         # Always load the absolute best model state at the end of training
-        model.load_state_dict(best_model_state)
+        raw_dict = best_model_state if isinstance(best_model_state, dict) else {}
+        clean_dict = {k.replace("_orig_mod.", ""): v for k, v in raw_dict.items()}
+        model.load_state_dict(clean_dict)
         logger.info(f"Loaded absolute best model state from epoch {best_epoch} with metrics: "
                   f"Val Loss: {best_metrics['val_loss']:.4f}, "
                   f"MAPE: {best_metrics['val_mape']:.2f}%, "
@@ -1739,7 +1911,6 @@ def prepare_data_for_prediction(data: pd.DataFrame, timeframe: str) -> tuple:
 
 def calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate technical indicators for the given DataFrame"""
-    # Add basic price data if not present
     if 'High' not in df.columns:
         df['High'] = df['Close']
     if 'Low' not in df.columns:
@@ -1749,70 +1920,18 @@ def calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     if 'Volume' not in df.columns:
         df['Volume'] = 0
 
-    # Default windows for indicators
-    sma_window = 20
-    ema_span = 12
-    bb_window = 20
-    rsi_window = 14
-    momentum_window = 10
-    volatility_window = 20
-    adx_window = 14
-    cci_window = 20
-    stoch_window = 14
-    mfi_window = 14
-    epsilon = 1e-10  # Small value to prevent division by zero
+    epsilon = 1e-10
 
-    # Technical Indicators
-    # SMA
-    df['SMA_20'] = df['Close'].rolling(window=sma_window).mean()
-    
-    # EMA
-    df['EMA_20'] = df['Close'].ewm(span=ema_span, adjust=False).mean()
-    
     # RSI
     delta = df['Close'].diff()
-    gain = delta.where(delta > 0, 0).rolling(window=rsi_window).mean()
-    loss = -delta.where(delta < 0, 0).rolling(window=rsi_window).mean()
-    rs = gain / (loss + epsilon)  # Add epsilon to prevent division by zero
+    gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+    loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
+    rs = gain / (loss + epsilon)
     df['RSI_14'] = 100 - (100 / (1 + rs))
-    
-    # MACD
-    exp1 = df['Close'].ewm(span=12, adjust=False).mean()
-    exp2 = df['Close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = exp1 - exp2
-    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
-    
-    # Bollinger Bands
-    bb_middle = df['Close'].rolling(window=bb_window).mean()
-    bb_std = df['Close'].rolling(window=bb_window).std()
-    df['Bollinger_middle'] = bb_middle
-    df['Bollinger_Upper'] = bb_middle + 2 * bb_std
-    df['Bollinger_Lower'] = bb_middle - 2 * bb_std
-    
-    # ATR
-    df['ATR'] = ((df['High'] - df['Low']).rolling(rsi_window).mean() + 
-                 (df['High'] - df['Close'].shift()).abs().rolling(rsi_window).mean() + 
-                 (df['Low'] - df['Close'].shift()).abs().rolling(rsi_window).mean()) / 3
-    
-    # OBV
-    df['OBV'] = (np.sign(df['Close'].diff()) * df['Volume']).cumsum()
-    
-    # VWAP
-    df['VWAP'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum() / (df['Volume'].cumsum() + epsilon)
-    
-    # Momentum
-    df['Momentum'] = df['Close'].diff(momentum_window)
-    
-    # Volatility
-    df['Volatility'] = df['Close'].rolling(window=volatility_window).std()
-    
-    # Lag1
-    df['Lag1'] = df['Close'].shift(1)
-    
-    # Sentiment_Up (placeholder - should be updated with actual sentiment data)
-    df['Sentiment_Up'] = 0.5  # Default neutral sentiment
-    
+
+    # Momentum (percentage change)
+    df['Momentum'] = df['Close'].pct_change(10)
+
     # ADX
     plus_dm = df['High'].diff()
     minus_dm = df['Low'].diff()
@@ -1823,52 +1942,93 @@ def calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
          (df['High'] - df['Close'].shift(1)).abs(),
          (df['Low'] - df['Close'].shift(1)).abs()
         ]).max()
-    atr = tr.rolling(window=adx_window).mean()
-    plus_di = 100 * (plus_dm.rolling(window=adx_window).mean() / (atr + epsilon))
-    minus_di = 100 * (minus_dm.rolling(window=adx_window).mean() / (atr + epsilon))
+    atr = tr.rolling(window=14).mean()
+    plus_di = 100 * (plus_dm.rolling(window=14).mean() / (atr + epsilon))
+    minus_di = 100 * (minus_dm.rolling(window=14).mean() / (atr + epsilon))
     dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di + epsilon))
-    df['ADX'] = dx.rolling(window=adx_window).mean()
-    
+    df['ADX'] = dx.rolling(window=14).mean()
+
     # CCI
     typical_price = (df['High'] + df['Low'] + df['Close']) / 3
     mean_dev = pd.Series(0.0, index=df.index)
-    for i in range(cci_window, len(df)):
-        mean_dev[i] = sum(abs(typical_price[i-cci_window+1:i+1] - 
-                            typical_price[i-cci_window+1:i+1].mean())) / cci_window
-    df['CCI'] = (typical_price - typical_price.rolling(window=cci_window).mean()) / (0.015 * (mean_dev + epsilon))
-    
+    for i in range(20, len(df)):
+        mean_dev[i] = sum(abs(typical_price[i-20+1:i+1] -
+                            typical_price[i-20+1:i+1].mean())) / 20
+    df['CCI'] = (typical_price - typical_price.rolling(window=20).mean()) / (0.015 * (mean_dev + epsilon))
+
     # Stochastic Oscillator
-    low_min = df['Low'].rolling(window=stoch_window).min()
-    high_max = df['High'].rolling(window=stoch_window).max()
+    low_min = df['Low'].rolling(window=14).min()
+    high_max = df['High'].rolling(window=14).max()
     df['Stoch_%K'] = 100 * (df['Close'] - low_min) / (high_max - low_min + epsilon)
     df['Stoch_%D'] = df['Stoch_%K'].rolling(window=3).mean()
-    
-    # Money Flow Index (MFI)
+
+    # MFI
     typical_price = (df['High'] + df['Low'] + df['Close']) / 3
     money_flow = typical_price * df['Volume']
     positive_flow = pd.Series(0.0, index=df.index)
     negative_flow = pd.Series(0.0, index=df.index)
-    
-    # Calculate positive and negative money flow
     for i in range(1, len(df)):
         if typical_price[i] > typical_price[i-1]:
             positive_flow[i] = money_flow[i]
         else:
             negative_flow[i] = money_flow[i]
-    
-    positive_mf = positive_flow.rolling(window=mfi_window).sum()
-    negative_mf = negative_flow.rolling(window=mfi_window).sum()
-    
-    # Calculate MFI
+    positive_mf = positive_flow.rolling(window=14).sum()
+    negative_mf = negative_flow.rolling(window=14).sum()
     df['MFI'] = 100 - (100 / (1 + positive_mf / (negative_mf + epsilon)))
-    
+
+    # ATR
+    df['ATR'] = ((df['High'] - df['Low']).rolling(14).mean() +
+                 (df['High'] - df['Close'].shift()).abs().rolling(14).mean() +
+                 (df['Low'] - df['Close'].shift()).abs().rolling(14).mean()) / 3
+
+    # Volatility (relative)
+    vol = df['Close'].rolling(window=20).std()
+    vol_mean = df['Close'].rolling(window=20).mean()
+    df['Volatility'] = vol / vol_mean
+
+    # OBV
+    df['OBV'] = (np.sign(df['Close'].diff()) * df['Volume']).cumsum()
+
+    # VWAP
+    df['VWAP'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum() / (df['Volume'].cumsum() + epsilon)
+
+    # Volume profile
+    vol_ma = df['Volume'].rolling(window=20).mean()
+    df['Volume_Profile'] = df['Volume'] / vol_ma
+
+    # Multi-timeframe momentum
+    df['Momentum_5'] = df['Close'].pct_change(5)
+    df['Momentum_10'] = df['Close'].pct_change(10)
+    df['Momentum_20'] = df['Close'].pct_change(20)
+
+    # Market regime detection (SMA crossover)
+    sma_short = df['Close'].rolling(10).mean()
+    sma_long = df['Close'].rolling(30).mean()
+    df['Market_Regime'] = np.where(sma_short > sma_long, 1.0,
+                         np.where(sma_short < sma_long, -1.0, 0.0))
+
+    # Volatility regime
+    ret_vol = df['Close'].pct_change().rolling(20).std()
+    vol_median = ret_vol.rolling(50).median()
+    df['Volatility_Regime'] = np.where(ret_vol > vol_median, 1.0, -1.0)
+
+    # Time features (cyclical encoding)
+    if hasattr(df.index, 'hour'):
+        df['Hour_Sin'] = np.sin(2 * np.pi * df.index.hour / 24)
+        df['Hour_Cos'] = np.cos(2 * np.pi * df.index.hour / 24)
+        df['DayOfWeek_Sin'] = np.sin(2 * np.pi * df.index.dayofweek / 7)
+        df['DayOfWeek_Cos'] = np.cos(2 * np.pi * df.index.dayofweek / 7)
+    else:
+        df['Hour_Sin'] = 0.0
+        df['Hour_Cos'] = 1.0
+        df['DayOfWeek_Sin'] = 0.0
+        df['DayOfWeek_Cos'] = 1.0
+
     # Handle missing values
     df = df.ffill().bfill()
-    
-    # Replace infinite values with NaN and then fill them
     df = df.replace([np.inf, -np.inf], np.nan)
     df = df.ffill().bfill()
-    
+
     return df
 
 def monitor_training_data_quality(model, X_train, y_train, X_val, y_val, epoch):
@@ -2170,7 +2330,7 @@ class DataAugmentor:
                 df[f'roc_{period}'] = df['Close'].pct_change(period)
                 
                 # Momentum
-                df[f'momentum_{period}'] = df['Close'] - df['Close'].shift(period)
+                df[f'momentum_{period}'] = df['Close'].pct_change(period)
                 
                 # Acceleration
                 df[f'acceleration_{period}'] = df[f'momentum_{period}'] - df[f'momentum_{period}'].shift(1)
@@ -2179,8 +2339,8 @@ class DataAugmentor:
                 df[f'trend_strength_{period}'] = df['Close'].rolling(period).mean() / df['Close'] - 1
             
             # Add RSI variations
-            df['rsi_smooth'] = df['RSI'].rolling(3).mean()
-            df['rsi_impulse'] = df['RSI'] - df['RSI'].shift(3)
+            df['rsi_smooth'] = df['RSI_14'].rolling(3).mean()
+            df['rsi_impulse'] = df['RSI_14'] - df['RSI_14'].shift(3)
             
             return df
             

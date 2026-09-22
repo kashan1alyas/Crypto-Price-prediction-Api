@@ -66,8 +66,7 @@ uvicorn main:app --reload
 ## API Documentation
 
 Once the server is running, visit:
-- API documentation: http://localhost:8000/docs
-- Alternative documentation: http://localhost:8000/redoc
+- API documentation: http://localhost:8000/docs- Alternative documentation: http://localhost:8000/redoc
 
 ## Environment Variables
 

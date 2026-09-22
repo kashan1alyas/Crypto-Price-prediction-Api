@@ -1,0 +1,21 @@
+{
+  "timestamp": "2026-09-08T17:09:11.359567",
+  "timeframe": "24h",
+  "symbols": [
+    "UNI"
+  ],
+  "total_seconds": 22.0,
+  "successful": 0,
+  "promoted": 0,
+  "rejected": 0,
+  "failed": 1,
+  "results": [
+    {
+      "status": "error",
+      "error": "Error(s) in loading state_dict for OptimizedModule:\n\tMissing key(s) in state_dict: \"_orig_mod.input_norm.weight\", \"_orig_mod.input_norm.bias\", \"_orig_mod.lstm_layers.0.weight_ih_l0\", \"_orig_mod.lstm_layers.0.weight_hh_l0\", \"_orig_mod.lstm_layers.0.bias_ih_l0\", \"_orig_mod.lstm_layers.0.bias_hh_l0\", \"_orig_mod.lstm_layers.0.weight_ih_l0_reverse\", \"_orig_mod.lstm_layers.0.weight_hh_l0_reverse\", \"_orig_mod.lstm_layers.0.bias_ih_l0_reverse\", \"_orig_mod.lstm_layers.0.bias_hh_l0_reverse\", \"_orig_mod.layer_norms.0.weight\", \"_orig_mod.layer_norms.0.bias\", \"_orig_mod.attention.0.weight\", \"_orig_mod.attention.0.bias\", \"_orig_mod.attention.2.weight\", \"_orig_mod.attention.2.bias\", \"_orig_mod.fc1.weight\", \"_orig_mod.fc1.bias\", \"_orig_mod.fc2.weight\", \"_orig_mod.fc2.bias\". \n\tUnexpected key(s) in state_dict: \"input_norm.weight\", \"input_norm.bias\", \"lstm_layers.0.weight_ih_l0\", \"lstm_layers.0.weight_hh_l0\", \"lstm_layers.0.bias_ih_l0\", \"lstm_layers.0.bias_hh_l0\", \"lstm_layers.0.weight_ih_l0_reverse\", \"lstm_layers.0.weight_hh_l0_reverse\", \"lstm_layers.0.bias_ih_l0_reverse\", \"lstm_layers.0.bias_hh_l0_reverse\", \"layer_norms.0.weight\", \"layer_norms.0.bias\", \"attention.0.weight\", \"attention.0.bias\", \"attention.2.weight\", \"attention.2.bias\", \"fc1.weight\", \"fc1.bias\", \"fc2.weight\", \"fc2.bias\". ",
+      "elapsed_seconds": 22.0,
+      "symbol": "UNI",
+      "timeframe": "24h"
+    }
+  ]
+}

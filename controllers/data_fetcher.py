@@ -20,8 +20,150 @@ from alpha_vantage.cryptocurrencies import CryptoCurrencies
 # Set of major cryptocurrency symbols
 CRYPTO_SYMBOLS = {
     'BTC', 'ETH', 'BNB', 'XRP', 'ADA', 'DOGE', 'SOL', 'DOT', 'MATIC',
-    'LINK', 'UNI', 'LTC', 'ATOM', 'ETC', 'XLM', 'ALGO', 'XMR', 'FIL'
+    'LINK', 'UNI', 'LTC', 'ATOM', 'ETC', 'XLM', 'ALGO', 'XMR', 'FIL',
+    'TRX', 'AVAX', 'NEAR', 'FTM', 'APE', 'ARB', 'OP',
+    'INJ', 'SUI', 'APT', 'SEI', 'TIA', 'JUP', 'WIF', 'BONK', 'PEPE',
+    'SHIB', 'SAND', 'MANA', 'AXS', 'GALA', 'IMX', 'CRV', 'LDO', 'RPL',
+    'MKR', 'AAVE', 'COMP', 'SNX', 'YFI', 'SUSHI', '1INCH', 'RUNE'
 }
+
+# CoinGecko ID mapping for cryptocurrencies
+COINGECKO_ID_MAP = {
+    'btc': 'bitcoin',
+    'eth': 'ethereum',
+    'bnb': 'binancecoin',
+    'xrp': 'ripple',
+    'ada': 'cardano',
+    'doge': 'dogecoin',
+    'sol': 'solana',
+    'dot': 'polkadot',
+    'matic': 'matic-network',
+    'link': 'chainlink',
+    'uni': 'uniswap',
+    'ltc': 'litecoin',
+    'atom': 'cosmos',
+    'etc': 'ethereum-classic',
+    'xlm': 'stellar',
+    'algo': 'algorand',
+    'xmr': 'monero',
+    'fil': 'filecoin',
+    'trx': 'tron',
+    'avax': 'avalanche-2',
+    'near': 'near',
+    'ftm': 'fantom',
+    'ape': 'apecoin',
+    'arb': 'arbitrum',
+    'op': 'optimism',
+    'inj': 'injective-protocol',
+    'sui': 'sui',
+    'apt': 'aptos',
+    'sei': 'sei-network',
+    'tia': 'celestia',
+    'jup': 'jupiter-exchange-solana',
+    'wif': 'dogwifcoin',
+    'bonk': 'bonk',
+    'pepe': 'pepe',
+    'shib': 'shiba-inu',
+    'sand': 'the-sandbox',
+    'mana': 'decentraland',
+    'axs': 'axie-infinity',
+    'gala': 'gala',
+    'imx': 'immutable-x',
+    'crv': 'curve-dao-token',
+    'ldo': 'lido-dao',
+    'rpl': 'rocket-pool',
+    'mkr': 'maker',
+    'aave': 'aave',
+    'comp': 'compound-governance-token',
+    'snx': 'havven',
+    'yfi': 'yearn-finance',
+    'sushi': 'sushi',
+    '1inch': '1inch',
+    'rune': 'thorchain'
+}
+
+# Yahoo Finance symbol suffix mapping
+YAHOO_FINANCE_SUFFIX = {
+    # Crypto gets -USD suffix
+    'crypto': '-USD',
+    # Stocks can optionally have exchange suffixes, but usually not needed
+    'stock': ''
+}
+
+# Alpha Vantage symbol format mapping
+ALPHA_VANTAGE_FORMAT = {
+    # Crypto uses plain symbol (e.g., BTC)
+    'crypto': lambda s: s.upper(),
+    # Stocks use plain symbol (e.g., AAPL)
+    'stock': lambda s: s.upper()
+}
+
+
+def normalize_symbol(symbol: str) -> str:
+    """
+    Normalize a symbol to its base form (uppercase, no suffixes).
+    
+    Args:
+        symbol: Raw symbol input (e.g., 'BTC', 'btc-USD', 'btc_usd')
+        
+    Returns:
+        Normalized base symbol in uppercase (e.g., 'BTC')
+    """
+    if not symbol:
+        return symbol
+    # Remove common suffixes and normalize
+    normalized = symbol.upper().split('-')[0].split('_')[0]
+    return normalized
+
+
+def get_yf_symbol(symbol: str) -> str:
+    """
+    Get Yahoo Finance formatted symbol.
+    
+    Args:
+        symbol: Base symbol (e.g., 'BTC', 'AAPL')
+        
+    Returns:
+        Yahoo Finance formatted symbol (e.g., 'BTC-USD' for crypto, 'AAPL' for stock)
+    """
+    base = normalize_symbol(symbol)
+    if is_crypto(base):
+        return f"{base}{YAHOO_FINANCE_SUFFIX['crypto']}"
+    return f"{base}{YAHOO_FINANCE_SUFFIX['stock']}"
+
+
+def get_coingecko_id(symbol: str) -> Optional[str]:
+    """
+    Get CoinGecko ID for a symbol.
+    
+    Args:
+        symbol: Base symbol (e.g., 'BTC', 'TRX')
+        
+    Returns:
+        CoinGecko slug (e.g., 'bitcoin', 'tron') or None if not found
+    """
+    base = normalize_symbol(symbol).lower()
+    coin_id = COINGECKO_ID_MAP.get(base)
+    if not coin_id:
+        logger.warning(f"No CoinGecko ID mapping found for symbol '{symbol}' (base: '{base}')")
+    return coin_id
+
+
+def get_av_symbol(symbol: str, asset_type: str = 'crypto') -> str:
+    """
+    Get Alpha Vantage formatted symbol.
+    
+    Args:
+        symbol: Base symbol (e.g., 'BTC', 'AAPL')
+        asset_type: 'crypto' or 'stock'
+        
+    Returns:
+        Alpha Vantage formatted symbol
+    """
+    base = normalize_symbol(symbol)
+    formatter = ALPHA_VANTAGE_FORMAT.get(asset_type, ALPHA_VANTAGE_FORMAT['crypto'])
+    return formatter(base)
+
 
 def is_crypto(symbol: str) -> bool:
     """
@@ -33,8 +175,7 @@ def is_crypto(symbol: str) -> bool:
     Returns:
         bool: True if the symbol represents a cryptocurrency, False otherwise
     """
-    # Remove any USD suffix if present (e.g., 'BTC-USD' -> 'BTC')
-    base_symbol = symbol.split('-')[0].upper()
+    base_symbol = normalize_symbol(symbol)
     return base_symbol in CRYPTO_SYMBOLS
 
 # Setup logging
@@ -69,7 +210,7 @@ def rate_limit(max_per_minute: int = settings.MAX_REQUESTS_PER_MINUTE):
     return decorator
 
 class CoinGeckoAPI:
-    """Custom CoinGecko API client"""
+    """Custom CoinGecko API client with robust error handling"""
     def __init__(self):
         self.base_url = "https://api.coingecko.com/api/v3"
         self.session = requests.Session()
@@ -107,21 +248,48 @@ class CoinGeckoAPI:
             
             response = self.session.get(url, params=params, timeout=30)
             
+            # Handle specific HTTP status codes
             if response.status_code == 429:
                 retry_after = int(response.headers.get('Retry-After', 60))
-                logger.warning(f"Rate limit exceeded, waiting {retry_after} seconds")
+                logger.warning(f"CoinGecko rate limit exceeded (429). Retry-After: {retry_after}s. Waiting...")
                 await asyncio.sleep(retry_after)
                 response = self.session.get(url, params=params, timeout=30)
             
             if response.status_code == 401:
-                logger.warning("Using fallback simple price endpoint")
+                logger.warning("CoinGecko API key unauthorized (401). Falling back to simple price endpoint.")
                 return await self._get_fallback_data(coin_id, vs_currency, days)
+            
+            if response.status_code == 404:
+                logger.error(f"CoinGecko: Coin '{coin_id}' not found (404). Check if the coin ID is valid.")
+                return None
+            
+            if response.status_code == 403:
+                logger.error("CoinGecko: Access forbidden (403). API key may be invalid or rate limited.")
+                return None
                 
             response.raise_for_status()
-            return response.json()
             
+            # Validate response content
+            try:
+                data = response.json()
+            except ValueError as e:
+                logger.error(f"CoinGecko: Invalid JSON response for {coin_id}: {str(e)}")
+                return None
+            
+            if not isinstance(data, dict):
+                logger.error(f"CoinGecko: Expected dict response, got {type(data).__name__} for {coin_id}")
+                return None
+            
+            return data
+            
+        except requests.exceptions.Timeout:
+            logger.error(f"CoinGecko: Request timed out for {coin_id} after 30s")
+            return None
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"CoinGecko: Connection error for {coin_id}: {str(e)}")
+            return None
         except requests.exceptions.RequestException as e:
-            logger.error(f"CoinGecko API request failed: {str(e)}")
+            logger.error(f"CoinGecko API request failed for {coin_id}: {str(e)}")
             return None
             
     async def _get_fallback_data(self, coin_id: str, vs_currency: str, days: int) -> Dict:
@@ -189,8 +357,16 @@ class DataFetcher:
             # Add technical indicators
             df_with_indicators, actual_feature_names = self._add_technical_indicators(df.copy(), timeframe)
             
+            if df_with_indicators is None or df_with_indicators.empty:
+                logger.warning(f"Technical indicators returned empty/None for {symbol} ({timeframe})")
+                return pd.DataFrame()
+            
             # Validate and clean final data
             final_df = self._clean_data(df_with_indicators.copy())
+            
+            if final_df is None or final_df.empty:
+                logger.warning(f"Clean data returned empty for {symbol} ({timeframe})")
+                return pd.DataFrame()
             
             return final_df
             
@@ -200,59 +376,62 @@ class DataFetcher:
 
     async def _fetch_coingecko_with_retry(self, symbol: str, timeframe: str, min_points: int, max_retries: int = 3) -> Optional[pd.DataFrame]:
         """Fetch data from CoinGecko with retry mechanism"""
+        coin_id = None
         for attempt in range(max_retries):
             try:
                 coin_id = self._get_coingecko_id(symbol.lower())
                 if not coin_id:
-                    logger.warning(f"No CoinGecko ID mapping for {symbol}")
+                    logger.warning(f"No CoinGecko ID mapping for {symbol}. Skipping CoinGecko fetch.")
                     return None
                 
                 # Determine desired API interval based on our system's timeframe
-                # If our system timeframe is sub-daily, we desire hourly from CoinGecko if possible.
                 desired_api_interval = 'hourly' if timeframe in ["30m", "1h", "4h"] else 'daily'
 
-                # Calculate days needed. For hourly, CoinGecko provides it up to 90 days.
-                # For daily, it can go longer (though our processing might cap it too).
+                # Calculate days needed
                 if desired_api_interval == 'hourly':
-                    # For now, let's simplify: request up to 90 days if hourly is desired.
-                    # The `min_points` check after fetching will determine sufficiency.
                     days_to_request_cg = min(self._calculate_days_needed(timeframe, min_points, source_hint='coingecko_hourly'), 90)
-                else: # desired_api_interval == 'daily'
+                else:
                     days_to_request_cg = self._calculate_days_needed(timeframe, min_points, source_hint='coingecko_daily')
-                    # CoinGecko's free tier market_chart is often limited in total span for daily too, e.g. 365 for some, less for others
-                    # Let CoinGeckoAPI handle capping days if there's an overall limit, e.g. min(days, 90) was there before for all.
-                    # The days parameter to CoinGecko should be based on its capability for the desired interval.
-                    # If desired is hourly, we cap days at 90. If daily, we can ask for more (e.g. up to 365).
-                    # This nested if/else was causing the redundant call, simplified below.
-                    # if desired_api_interval == 'hourly':
-                    #     days_to_request_cg = min(self._calculate_days_needed(timeframe, min_points), 90)
-                    # else: # daily
-                    #     days_to_request_cg = self._calculate_days_needed(timeframe, min_points) 
-                    #     days_to_request_cg = min(days_to_request_cg, 365) # Cap daily requests to 1 year for safety
-                    days_to_request_cg = min(days_to_request_cg, 365) # Cap daily requests to 1 year for safety, applied to the already hint-calculated days
+                    days_to_request_cg = min(days_to_request_cg, 365)
 
-                logger.debug(f"CoinGecko fetch: timeframe={timeframe}, desired_api_interval={desired_api_interval}, days_to_request_cg={days_to_request_cg}, min_points_system={min_points}")
+                logger.debug(f"CoinGecko fetch: symbol={symbol}, coin_id={coin_id}, timeframe={timeframe}, desired_api_interval={desired_api_interval}, days_to_request_cg={days_to_request_cg}, min_points_system={min_points}")
 
                 data = await self.coingecko_client.get_coin_market_chart_by_id(
                     coin_id,
                     'usd',
-                    days=days_to_request_cg, # Use calculated days
-                    desired_api_interval=desired_api_interval # Pass desired interval
+                    days=days_to_request_cg,
+                    desired_api_interval=desired_api_interval
                 )
                 
-                if data and 'prices' in data:
+                # Detailed response logging
+                if data is None:
+                    logger.warning(f"CoinGecko returned None for {symbol} (coin_id={coin_id}) on attempt {attempt + 1}")
+                elif not isinstance(data, dict):
+                    logger.warning(f"CoinGecko returned non-dict response for {symbol} (coin_id={coin_id}): type={type(data).__name__}, attempt={attempt + 1}")
+                elif 'prices' not in data:
+                    logger.warning(f"CoinGecko response missing 'prices' key for {symbol} (coin_id={coin_id}). Keys present: {list(data.keys())}, attempt={attempt + 1}")
+                elif data['prices'] is None or len(data['prices']) == 0:
+                    logger.warning(f"CoinGecko returned empty 'prices' array for {symbol} (coin_id={coin_id}), attempt={attempt + 1}")
+                else:
+                    logger.info(f"CoinGecko returned {len(data['prices'])} price points for {symbol} (coin_id={coin_id}), attempt={attempt + 1}")
+
+                if data and 'prices' in data and data['prices']:
                     df = self._process_coingecko_data(data, timeframe)
-                    if df is not None and len(df) >= min_points:
+                    if df is not None and not df.empty and len(df) >= min_points:
                         return df
-                    
-                logger.warning(f"Insufficient data from CoinGecko: got {len(df) if df is not None else 0} points, need {min_points}")
+                    elif df is not None:
+                        logger.warning(f"CoinGecko data insufficient for {symbol}: got {len(df)} rows after processing, need {min_points} (attempt {attempt + 1})")
+                    else:
+                        logger.warning(f"CoinGecko data processing returned None/empty for {symbol} (coin_id={coin_id}), attempt={attempt + 1}")
+                
                 await asyncio.sleep(1)
                 
             except Exception as e:
-                logger.error(f"CoinGecko fetch attempt {attempt + 1} failed: {str(e)}")
+                logger.error(f"CoinGecko fetch attempt {attempt + 1} failed for {symbol} (coin_id={coin_id}): {str(e)}", exc_info=True)
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     
+        logger.error(f"CoinGecko fetch definitively failed for {symbol} (coin_id={coin_id}) after {max_retries} attempts")
         return None
 
     def _calculate_days_needed(self, timeframe: str, min_points: int, source_hint: Optional[str] = None) -> int:
@@ -294,27 +473,25 @@ class DataFetcher:
         return final_days
 
     def _get_coingecko_id(self, symbol: str) -> Optional[str]:
-        """Map symbol to CoinGecko ID"""
-        mapping = {
-            "btc": "bitcoin",
-            "eth": "ethereum",
-            "bnb": "binancecoin",
-            "xrp": "ripple",
-            "ada": "cardano",
-            "doge": "dogecoin",
-            "sol": "solana"
-        }
-        return mapping.get(symbol.lower())
+        """Map symbol to CoinGecko ID - delegates to centralized utility"""
+        return get_coingecko_id(symbol)
 
     async def _fetch_yfinance_with_retry(self, symbol: str, timeframe: str, min_points: int, max_retries: int = 3) -> Optional[pd.DataFrame]:
+        """Fetch data from Yahoo Finance with retry and specific error handling"""
         logger.debug(f"Attempting to fetch yfinance data for {symbol}, timeframe {timeframe}, requiring {min_points} points.")
+        
+        # Ensure crypto symbols are normalized to {SYMBOL}-USD format
+        base = normalize_symbol(symbol)
+        if is_crypto(base):
+            yf_symbol = f"{base}-USD"
+        else:
+            yf_symbol = symbol.upper()
+        
         for attempt in range(max_retries):
             try:
                 period = self._get_yfinance_period(timeframe, min_points)
                 interval = self._get_yfinance_interval(timeframe)
                 
-                # Format symbol based on type (crypto vs stock)
-                yf_symbol = f"{symbol.upper()}-USD" if is_crypto(symbol) else symbol.upper()
                 logger.debug(f"Yfinance request: symbol={yf_symbol}, period={period}, interval={interval}, attempt={attempt + 1}")
                 
                 ticker = yf.Ticker(yf_symbol)
@@ -326,9 +503,16 @@ class DataFetcher:
                     timeout=30
                 )
                 
-                if not data_hist.empty:
-                    logger.info(f"Fetched {len(data_hist)} raw data points from YFinance for {symbol} (attempt {attempt + 1}).")
+                # Detailed response logging
+                if data_hist is None:
+                    logger.warning(f"YFinance returned None for {yf_symbol} on attempt {attempt + 1}")
+                elif data_hist.empty:
+                    logger.warning(f"YFinance returned empty DataFrame for {yf_symbol} with period={period}, interval={interval} (attempt {attempt + 1}). Possible causes: invalid symbol, delisted asset, or API restriction.")
+                else:
+                    logger.info(f"YFinance returned {len(data_hist)} raw data points for {yf_symbol} (attempt {attempt + 1})")
                     logger.info(f"Data range: {data_hist.index.min()} to {data_hist.index.max()}")
+                
+                if not data_hist.empty:
                     processed_data = self._process_yfinance_data(data_hist.copy())
                     
                     if processed_data is not None and not processed_data.empty:
@@ -341,19 +525,127 @@ class DataFetcher:
                             logger.warning(f"Insufficient YFinance data for {symbol} after processing: got {len(processed_data)}, require {min_points}. Retrying if possible.")
                     else:
                         logger.warning(f"YFinance data for {symbol} became empty or None after processing. Retrying if possible.")
-                else:
-                    logger.warning(f"YFinance returned empty dataframe for {symbol} with period={period}, interval={interval} (attempt {attempt + 1}).")
-
+                
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt + 1)
                 
-            except Exception as e:
-                logger.error(f"YFinance fetch attempt {attempt + 1} for {symbol} failed: {str(e)}", exc_info=True)
+            except KeyError as e:
+                logger.error(f"YFinance: Missing expected data field for {yf_symbol}: {str(e)}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt + 2)
+                    await asyncio.sleep(2 ** attempt + 1)
+            except Exception as e:
+                error_msg = str(e).lower()
+                if 'rate limit' in error_msg or 'too many requests' in error_msg:
+                    logger.warning(f"YFinance: Rate limited for {yf_symbol}. Waiting 60s before retry...")
+                    await asyncio.sleep(60)
+                elif 'no data found' in error_msg or 'invalid period' in error_msg:
+                    logger.error(f"YFinance: No data available for {yf_symbol} with period={period}, interval={interval}. Symbol may not support this timeframe.")
+                    return None  # Don't retry for invalid period/interval
+                else:
+                    logger.error(f"YFinance fetch attempt {attempt + 1} for {yf_symbol} failed: {str(e)}", exc_info=True)
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2 ** attempt + 2)
                     
-        logger.error(f"YFinance fetch definitively failed for {symbol} after {max_retries} attempts.")
+        logger.error(f"YFinance fetch definitively failed for {yf_symbol} after {max_retries} attempts.")
         return None
+
+    async def _fetch_binance_klines(self, symbol: str, timeframe: str, min_points: int) -> Optional[pd.DataFrame]:
+        """Fetch sub-hourly crypto data from Binance Public Klines API.
+        
+        Binance provides up to 1000 candles per request for 30m intervals,
+        making it ideal for sub-hourly data that CoinGecko cannot provide
+        (CoinGecko caps 30m at ~96 points / 2 days).
+        
+        Args:
+            symbol: Base symbol (e.g., 'BTC', 'SOL')
+            timeframe: Timeframe string (e.g., '30m')
+            min_points: Minimum number of data points required
+            
+        Returns:
+            DataFrame with OHLCV data or None if fetch fails
+        """
+        if timeframe not in ('30m', '1h', '4h'):
+            logger.debug(f"Binance Klines only supports sub-hourly intervals, skipping for {timeframe}")
+            return None
+            
+        base = normalize_symbol(symbol)
+        binance_symbol = f"{base}USDT"
+        
+        # Map timeframe to Binance interval
+        interval_map = {
+            '30m': '30m',
+            '1h': '1h',
+            '4h': '4h',
+        }
+        binance_interval = interval_map.get(timeframe)
+        if not binance_interval:
+            logger.warning(f"Unsupported Binance interval for timeframe: {timeframe}")
+            return None
+        
+        try:
+            # Binance public API - no auth needed for klines
+            url = "https://api.binance.com/api/v3/klines"
+            params = {
+                'symbol': binance_symbol,
+                'interval': binance_interval,
+                'limit': min(1000, max(min_points + 100, 500))  # Request extra for warmup
+            }
+            
+            logger.info(f"Fetching Binance Klines: {binance_symbol} {binance_interval} (limit={params['limit']})")
+            
+            response = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: requests.get(url, params=params, timeout=30)
+            )
+            
+            if response.status_code != 200:
+                logger.warning(f"Binance API returned status {response.status_code} for {binance_symbol}: {response.text[:200]}")
+                return None
+            
+            data = response.json()
+            if not data or not isinstance(data, list) or len(data) == 0:
+                logger.warning(f"Binance returned empty data for {binance_symbol}")
+                return None
+            
+            logger.info(f"Binance returned {len(data)} candles for {binance_symbol}")
+            
+            # Parse Binance klines format:
+            # [open_time, open, high, low, close, volume, close_time, ...]
+            df = pd.DataFrame(data, columns=[
+                'open_time', 'Open', 'High', 'Low', 'Close', 'Volume',
+                'close_time', 'quote_volume', 'trades', 'taker_buy_volume',
+                'taker_buy_quote_volume', 'ignore'
+            ])
+            
+            # Convert timestamps to datetime
+            df['Timestamp'] = pd.to_datetime(df['open_time'], unit='ms')
+            df.set_index('Timestamp', inplace=True)
+            
+            # Convert numeric columns
+            for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Keep only OHLCV columns
+            df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+            
+            # Remove duplicates and sort
+            df = df[~df.index.duplicated(keep='last')]
+            df.sort_index(inplace=True)
+            
+            logger.info(f"Processed Binance data for {symbol}: {len(df)} points, range: {df.index.min()} to {df.index.max()}")
+            
+            if len(df) >= min_points:
+                return df
+            else:
+                logger.warning(f"Binance data insufficient for {symbol}: got {len(df)}, need {min_points}")
+                return df  # Return partial data for fallback consideration
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Binance API request failed for {binance_symbol}: {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"Binance Klines fetch failed for {binance_symbol}: {str(e)}", exc_info=True)
+            return None
 
     def _process_yfinance_data(self, df: pd.DataFrame) -> pd.DataFrame:
         try:
@@ -510,69 +802,103 @@ class DataFetcher:
     def _add_technical_indicators(self, df: pd.DataFrame, timeframe: str) -> tuple:
         """Add technical indicators to DataFrame"""
         try:
-            # Create a copy for technical indicators
+            if df is None or df.empty:
+                logger.warning("Cannot add indicators to empty DataFrame")
+                return None, None
+
+            if len(df) < 15:
+                logger.warning(f"DataFrame too small for reliable indicators ({len(df)} rows); returning as-is")
+                return df, list(df.columns)
+
             df_ta = df.copy()
-            
-            # Add SMA
-            df_ta['SMA_20'] = ta.trend.sma_indicator(df['Close'], window=20)
-            
-            # Add EMA
-            df_ta['EMA_20'] = ta.trend.ema_indicator(df['Close'], window=20)
-            
-            # Add RSI
+            eps = 1e-8
+
+            # RSI
             df_ta['RSI_14'] = ta.momentum.rsi(df['Close'], window=14)
-            
-            # Add MACD
-            macd = ta.trend.MACD(df['Close'])
-            df_ta['MACD'] = macd.macd()
-            df_ta['MACD_Signal'] = macd.macd_signal()
-            df_ta['MACD_Hist'] = macd.macd_diff()
-            
-            # Add Bollinger Bands
-            bollinger = ta.volatility.BollingerBands(df['Close'])
-            df_ta['Bollinger_middle'] = bollinger.bollinger_mavg()
-            df_ta['Bollinger_Upper'] = bollinger.bollinger_hband()
-            df_ta['Bollinger_Lower'] = bollinger.bollinger_lband()
-            
-            # Add ATR
-            df_ta['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'])
-            
-            # Add OBV
-            df_ta['OBV'] = ta.volume.on_balance_volume(df['Close'], df['Volume'])
-            
-            # Add VWAP
-            df_ta['VWAP'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum() / df['Volume'].cumsum()
-            
-            # Add CCI
-            df_ta['CCI'] = ta.trend.cci(df['High'], df['Low'], df['Close'])
-            
-            # Add Stochastic
-            stoch = ta.momentum.StochasticOscillator(df['High'], df['Low'], df['Close'])
-            df_ta['Stoch_%K'] = stoch.stoch()
-            df_ta['Stoch_%D'] = stoch.stoch_signal()
-            
-            # Add MFI
-            df_ta['MFI'] = ta.volume.money_flow_index(df['High'], df['Low'], df['Close'], df['Volume'], 
-                                                    window=min(14, len(df)-1))
-            
-            # Add missing features
-            # Add Momentum (10-period)
-            df_ta['Momentum'] = df['Close'].diff(10)
-            
-            # Add Volatility (20-period)
-            df_ta['Volatility'] = df['Close'].rolling(window=20).std()
-            
-            # Add Lag1
-            df_ta['Lag1'] = df['Close'].shift(1)
-            
-            # Add Sentiment_Up (default neutral)
-            df_ta['Sentiment_Up'] = 0.5  # Default neutral sentiment
-            
-            # Add ADX
+
+            # Momentum (safe pct_change via replace)
+            shifted = df['Close'].shift(10)
+            df_ta['Momentum'] = (df['Close'] - shifted) / shifted.replace(0, eps)
+
+            # ADX
             df_ta['ADX'] = ta.trend.adx(df['High'], df['Low'], df['Close'])
+
+            # CCI (manual to add epsilon)
+            tp = (df['High'] + df['Low'] + df['Close']) / 3
+            sma_tp = tp.rolling(20).mean()
+            mean_dev = tp.rolling(20).apply(lambda x: np.mean(np.abs(x - x.mean())), raw=True)
+            df_ta['CCI'] = (tp - sma_tp) / (0.015 * mean_dev + eps)
+
+            # Stochastic (manual to add epsilon)
+            low_min = df['Low'].rolling(14).min()
+            high_max = df['High'].rolling(14).max()
+            df_ta['Stoch_%K'] = 100 * (df['Close'] - low_min) / (high_max - low_min + eps)
+            df_ta['Stoch_%D'] = df_ta['Stoch_%K'].rolling(3).mean()
+
+            # MFI (manual to add epsilon)
+            tp_mfi = (df['High'] + df['Low'] + df['Close']) / 3
+            mf = tp_mfi * df['Volume']
+            pos_mf = pd.Series(0.0, index=df.index)
+            neg_mf = pd.Series(0.0, index=df.index)
+            tp_diff = tp_mfi.diff()
+            pos_mf[tp_diff > 0] = mf[tp_diff > 0]
+            neg_mf[tp_diff < 0] = mf[tp_diff < 0]
+            pos_sum = pos_mf.rolling(14).sum()
+            neg_sum = neg_mf.rolling(14).sum()
+            df_ta['MFI'] = 100 - (100 / (1 + pos_sum / (neg_sum + eps)))
+
+            # ATR
+            df_ta['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'])
+
+            # Volatility (relative) with epsilon
+            vol = df['Close'].rolling(window=20).std()
+            vol_mean = df['Close'].rolling(window=20).mean()
+            df_ta['Volatility'] = vol / (vol_mean.abs() + eps)
+
+            # OBV
+            df_ta['OBV'] = ta.volume.on_balance_volume(df['Close'], df['Volume'])
+
+            # VWAP with epsilon
+            vwap_num = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum()
+            vwap_den = df['Volume'].cumsum()
+            df_ta['VWAP'] = vwap_num / (vwap_den + eps)
+
+            # Volume profile with epsilon
+            vol_ma = df['Volume'].rolling(window=20).mean()
+            df_ta['Volume_Profile'] = df['Volume'] / (vol_ma + eps)
+
+            # Multi-timeframe momentum (safe pct_change)
+            for period, col in [(5, 'Momentum_5'), (10, 'Momentum_10'), (20, 'Momentum_20')]:
+                shifted = df['Close'].shift(period)
+                df_ta[col] = (df['Close'] - shifted) / shifted.replace(0, eps)
+
+            # Market regime detection (SMA crossover)
+            sma_short = df['Close'].rolling(10).mean()
+            sma_long = df['Close'].rolling(30).mean()
+            df_ta['Market_Regime'] = np.where(sma_short > sma_long, 1.0,
+                                     np.where(sma_short < sma_long, -1.0, 0.0))
+
+            # Volatility regime
+            ret_vol = (df['Close'] - df['Close'].shift(1)) / (df['Close'].shift(1).replace(0, eps))
+            ret_vol = ret_vol.rolling(20).std()
+            vol_median = ret_vol.rolling(50).median()
+            df_ta['Volatility_Regime'] = np.where(ret_vol > vol_median, 1.0, -1.0)
+
+            # Time features (cyclical encoding)
+            if hasattr(df.index, 'hour'):
+                df_ta['Hour_Sin'] = np.sin(2 * np.pi * df.index.hour / 24)
+                df_ta['Hour_Cos'] = np.cos(2 * np.pi * df.index.hour / 24)
+                df_ta['DayOfWeek_Sin'] = np.sin(2 * np.pi * df.index.dayofweek / 7)
+                df_ta['DayOfWeek_Cos'] = np.cos(2 * np.pi * df.index.dayofweek / 7)
+            else:
+                df_ta['Hour_Sin'] = 0.0
+                df_ta['Hour_Cos'] = 1.0
+                df_ta['DayOfWeek_Sin'] = 0.0
+                df_ta['DayOfWeek_Cos'] = 1.0
             
             # Handle missing values in technical indicators
-            df_ta = df_ta.ffill().bfill()
+            df_ta = df_ta.replace([np.inf, -np.inf], np.nan)
+            df_ta = df_ta.ffill().bfill().fillna(0.0)
             
             # Add technical indicators to main dataframe
             df = df.copy()
@@ -602,8 +928,16 @@ class DataFetcher:
     def _clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Clean and preprocess data"""
         try:
+            if df is None or df.empty:
+                logger.warning("Cannot clean empty DataFrame")
+                return df if df is not None else pd.DataFrame()
+
             # Remove rows with zero volume
             df = df[df['Volume'] > 0].copy()
+            
+            if df.empty:
+                logger.warning("All rows removed by zero-volume filter")
+                return pd.DataFrame()
             
             # Forward fill missing values
             df = df.ffill().bfill()
@@ -803,10 +1137,17 @@ class DataFetcher:
         """
         Fetches data by trying CoinGecko, then yfinance, then Alpha Vantage.
         Uses different data source priorities based on symbol type (crypto vs stock).
+
+        Fallback behaviour:
+          - Each source is tried in order. If a source returns 0 rows or fails to meet the
+            minimum point threshold it is explicitly logged and the next source is tried.
+          - If no source satisfies the minimum but at least one returned partial data, the
+            largest partial result is used (with a warning) so we never silently return an
+            empty dataset when data is actually available.
         """
         try:
             logger.info(f"Fetching merged data for {symbol} ({timeframe})")
-            
+
             # Check for unsupported timeframe combinations
             is_stock = not is_crypto(symbol)
             if is_stock and timeframe in unsupported_timeframes:
@@ -824,47 +1165,148 @@ class DataFetcher:
             df = None
             source_used = None
 
+            # Track the best (largest) partial result across all sources in case none
+            # meet the minimum requirement but some data is still available.
+            best_partial_df = None
+            best_partial_source = None
+            best_partial_rows = -1
+
+            def _consider(candidate: Optional[pd.DataFrame], source_name: str):
+                """Update best_partial if candidate has more rows than current best."""
+                nonlocal best_partial_df, best_partial_source, best_partial_rows
+                if candidate is not None and len(candidate) > best_partial_rows:
+                    best_partial_df = candidate
+                    best_partial_source = source_name
+                    best_partial_rows = len(candidate)
+
             if is_crypto(symbol):
-                logger.info(f"Attempting to fetch crypto data from CoinGecko for {symbol} ({timeframe})")
-                df_coingecko = await self._fetch_coingecko_with_retry(symbol, timeframe, min_points)
-                if df_coingecko is not None and len(df_coingecko) >= min_points:
-                    df = df_coingecko
-                    source_used = "CoinGecko"
-                else:
-                    logger.warning(f"CoinGecko failed for {symbol} ({timeframe}). Trying YFinance.")
+                # Alpha Vantage's crypto intraday endpoints require a premium subscription,
+                # so for intraday crypto intervals we rely on CoinGecko + Binance + Yahoo Finance only
+                # and skip Alpha Vantage entirely. Daily (24h) crypto is still allowed as a
+                # last-resort fallback since it is available on the free tier.
+                intraday_crypto = timeframe in ('30m', '1h', '4h')
+                sub_hourly = timeframe == '30m'  # CoinGecko OHLC caps 30m at ~96 points
+
+                # For sub-hourly (30m), try Binance first since CoinGecko cannot provide enough data
+                if sub_hourly:
+                    logger.info(f"Sub-hourly crypto ({timeframe}): trying Binance Klines first for {symbol}")
+                    df_binance = await self._fetch_binance_klines(symbol, timeframe, min_points)
+                    if df_binance is not None and len(df_binance) >= min_points:
+                        df = df_binance
+                        source_used = "Binance"
+                    elif df_binance is not None and len(df_binance) > 0:
+                        _consider(df_binance, "Binance")
+                        logger.warning(f"Binance insufficient for {symbol} ({timeframe}): got {len(df_binance)}, need {min_points}. Trying CoinGecko/YFinance.")
+                    else:
+                        logger.warning(f"Binance returned no data for {symbol} ({timeframe}). Trying CoinGecko/YFinance.")
+
+                # Try CoinGecko (works well for 1h and above, limited for 30m)
+                if df is None and not sub_hourly:
+                    logger.info(f"Attempting to fetch crypto data from CoinGecko for {symbol} ({timeframe})")
+                    df_coingecko = await self._fetch_coingecko_with_retry(symbol, timeframe, min_points)
+                    if df_coingecko is not None and len(df_coingecko) == 0:
+                        logger.warning(f"CoinGecko returned 0 rows for {symbol} ({timeframe}); falling back to next source.")
+                    elif df_coingecko is not None and len(df_coingecko) >= min_points:
+                        df = df_coingecko
+                        source_used = "CoinGecko"
+                    else:
+                        _consider(df_coingecko, "CoinGecko")
+                        logger.warning(f"CoinGecko insufficient for {symbol} ({timeframe}) [rows={None if df_coingecko is None else len(df_coingecko)}]. Trying YFinance.")
+                elif df is None and sub_hourly:
+                    # For 30m, CoinGecko OHLC is limited, try YFinance directly
+                    logger.info(f"Skipping CoinGecko for 30m (limited to ~96 points), trying YFinance for {symbol}")
+                
+                # Try YFinance if still no data
+                if df is None:
                     df_yfinance = await self._fetch_yfinance_with_retry(symbol, timeframe, min_points)
-                    if df_yfinance is not None and len(df_yfinance) >= min_points:
+                    if df_yfinance is not None and len(df_yfinance) == 0:
+                        logger.warning(f"YFinance returned 0 rows for {symbol} ({timeframe}); falling back to next source.")
+                    elif df_yfinance is not None and len(df_yfinance) >= min_points:
                         df = df_yfinance
                         source_used = "YFinance"
                     else:
-                        logger.warning(f"YFinance failed for {symbol} ({timeframe}). Trying Alpha Vantage.")
-                        df_alphavantage = await self._fetch_alphavantage_with_retry(symbol, timeframe, min_points)
-                        if df_alphavantage is not None and len(df_alphavantage) >= min_points:
-                            df = df_alphavantage
-                            source_used = "Alpha Vantage"
+                        _consider(df_yfinance, "YFinance")
+                        if intraday_crypto:
+                            logger.warning(
+                                f"YFinance insufficient for {symbol} ({timeframe}) [rows={None if df_yfinance is None else len(df_yfinance)}]. "
+                                f"Alpha Vantage skipped for intraday crypto (requires premium subscription); "
+                                f"no further crypto sources for this interval."
+                            )
+                        else:
+                            logger.warning(f"YFinance insufficient for {symbol} ({timeframe}) [rows={None if df_yfinance is None else len(df_yfinance)}]. Trying Alpha Vantage.")
+                            df_alphavantage = await self._fetch_alphavantage_with_retry(symbol, timeframe, min_points)
+                            if df_alphavantage is not None and len(df_alphavantage) == 0:
+                                logger.warning(f"Alpha Vantage returned 0 rows for {symbol} ({timeframe}); no more sources.")
+                            elif df_alphavantage is not None and len(df_alphavantage) >= min_points:
+                                df = df_alphavantage
+                                source_used = "Alpha Vantage"
+                            else:
+                                _consider(df_alphavantage, "Alpha Vantage")
             else:
                 logger.info(f"Attempting to fetch stock data from YFinance for {symbol} ({timeframe})")
                 df_yfinance = await self._fetch_yfinance_with_retry(symbol, timeframe, min_points)
-                if df_yfinance is not None and len(df_yfinance) >= min_points:
+                if df_yfinance is not None and len(df_yfinance) == 0:
+                    logger.warning(f"YFinance returned 0 rows for {symbol} ({timeframe}); falling back to next source.")
+                elif df_yfinance is not None and len(df_yfinance) >= min_points:
                     df = df_yfinance
                     source_used = "YFinance"
                 else:
-                    logger.warning(f"YFinance failed for {symbol} ({timeframe}). Trying Alpha Vantage.")
+                    _consider(df_yfinance, "YFinance")
+                    logger.warning(f"YFinance insufficient for {symbol} ({timeframe}) [rows={None if df_yfinance is None else len(df_yfinance)}]. Trying Alpha Vantage.")
                     df_alphavantage = await self._fetch_alphavantage_with_retry(symbol, timeframe, min_points)
-                    if df_alphavantage is not None and len(df_alphavantage) >= min_points:
+                    if df_alphavantage is not None and len(df_alphavantage) == 0:
+                        logger.warning(f"Alpha Vantage returned 0 rows for {symbol} ({timeframe}); no more sources.")
+                    elif df_alphavantage is not None and len(df_alphavantage) >= min_points:
                         df = df_alphavantage
                         source_used = "Alpha Vantage"
+                    else:
+                        _consider(df_alphavantage, "Alpha Vantage")
+
+            # None of the sources met the minimum requirement: use the best partial result
+            # if any data was returned, so we don't silently return an empty dataset.
+            if df is None and best_partial_df is not None:
+                if best_partial_rows < 30:
+                    logger.warning(
+                        f"Best partial result too small ({best_partial_rows} rows) for "
+                        f"{symbol} ({timeframe}); skipping. Need at least 30 rows for indicators."
+                    )
+                else:
+                    logger.warning(
+                        f"No source met minimum requirement ({min_points} pts) for {symbol} ({timeframe}), "
+                        f"but using best partial result from {best_partial_source} ({best_partial_rows} rows)."
+                    )
+                    df = best_partial_df
+                    source_used = best_partial_source
 
             if df is not None:
                 df_with_indicators, _ = self._add_technical_indicators(df.copy(), timeframe)
-                self.cache[cache_key] = df_with_indicators.copy()
-                logger.info(f"Data fetched and processed for {symbol} ({timeframe}) using {source_used}. Shape: {df_with_indicators.shape}")
-                return df_with_indicators
+                # If indicator engineering produced an empty dataset, reject it rather than
+                # returning 0 rows upstream (which surfaces as a confusing "got 0" error).
+                if df_with_indicators is None or len(df_with_indicators) == 0:
+                    logger.error(
+                        f"Data for {symbol} ({timeframe}) became empty after adding technical "
+                        f"indicators; rejecting instead of returning an empty dataset."
+                    )
+                    df = None
+                else:
+                    self.cache[cache_key] = df_with_indicators.copy()
+                    logger.info(f"Data fetched and processed for {symbol} ({timeframe}) using {source_used}. Shape: {df_with_indicators.shape}")
+                    return df_with_indicators
 
+            # Detailed failure logging
             logger.error(f"Failed to fetch sufficient data for {symbol} ({timeframe}) from all sources.")
+            logger.error(f"  - Required minimum data points: {min_points}")
+            logger.error(f"  - Symbol type: {'crypto' if is_crypto(symbol) else 'stock'}")
+            if is_crypto(symbol):
+                logger.error(f"  - CoinGecko: Attempted with coin_id={get_coingecko_id(symbol) or 'MAPPING_NOT_FOUND'}")
+                logger.error(f"  - YFinance: Attempted with symbol={get_yf_symbol(symbol)}")
+                logger.error(f"  - Alpha Vantage: Attempted with symbol={get_av_symbol(symbol, 'crypto')}")
+            else:
+                logger.error(f"  - YFinance: Attempted with symbol={get_yf_symbol(symbol)}")
+                logger.error(f"  - Alpha Vantage: Attempted with symbol={get_av_symbol(symbol, 'stock')}")
             return None
         except Exception as e:
-            logger.error(f"Error in get_merged_data: {str(e)}")
+            logger.error(f"Error in get_merged_data for {symbol} ({timeframe}): {str(e)}", exc_info=True)
             return None
 
     def _get_min_points(self, symbol: str, timeframe: str) -> int:
@@ -932,10 +1374,10 @@ class DataFetcher:
         # YFinance limitations for intraday data
         if timeframe in ["30m", "1h", "4h"]:
             if timeframe == "30m":
-                # For 30m, request up to 60 days of data
-                # YFinance typically provides 60 days of 30m data reliably
-                days_needed = min(max(days_needed, 45), 60)  # At least 45 days, max 60
-                logger.info(f"Requesting {days_needed} days of 30m data from YFinance (expecting ~{days_needed * 48} points)")
+                # For 30m, use 30d period (within 60-day intraday limit)
+                # This ensures 300+ candles: 30 days * 48 points/day = 1440 points
+                days_needed = 30
+                logger.info(f"Requesting {days_needed}d period for 30m data from YFinance (expecting ~{days_needed * 48} points)")
             else:
                 # For 1h and 4h, can request more
                 days_needed = min(days_needed, 90)
@@ -956,7 +1398,16 @@ class DataFetcher:
         
         # Determine if this is a crypto or stock symbol
         symbol_is_crypto = is_crypto(symbol)
-        symbol_upper = symbol.upper()
+        symbol_upper = get_av_symbol(symbol, 'crypto' if symbol_is_crypto else 'stock')
+
+        # Alpha Vantage's crypto intraday endpoints require a premium subscription. Skip early
+        # for intraday crypto intervals to avoid wasted API calls and confusing failures.
+        if symbol_is_crypto and timeframe in ('30m', '1h', '4h'):
+            logger.warning(
+                f"Alpha Vantage skipped for crypto intraday interval {timeframe} ({symbol}). "
+                f"Intraday crypto data requires a premium subscription; use CoinGecko or Yahoo Finance."
+            )
+            return None
         
         # Initialize appropriate client if not already done
         if symbol_is_crypto:
@@ -1013,6 +1464,14 @@ class DataFetcher:
                             outputsize='full'
                         )
 
+                # Validate response
+                if data is None:
+                    logger.warning(f"Alpha Vantage returned None for {symbol_upper} on attempt {attempt + 1}")
+                elif data.empty:
+                    logger.warning(f"Alpha Vantage returned empty DataFrame for {symbol_upper} on attempt {attempt + 1}")
+                else:
+                    logger.info(f"Alpha Vantage returned {len(data)} rows for {symbol_upper} on attempt {attempt + 1}")
+
                 if data is not None and not data.empty:
                     # Process data based on type
                     if symbol_is_crypto:
@@ -1033,13 +1492,34 @@ class DataFetcher:
                 if attempt < max_retries - 1:
                     await asyncio.sleep((2 ** attempt) * 15)  # Increased sleep for AV free tier
                 
+            except ValueError as e:
+                error_msg = str(e).lower()
+                if 'invalid api call' in error_msg:
+                    logger.error(f"Alpha Vantage: Invalid API call for {symbol_upper}. The symbol or interval may not be supported.")
+                    return None  # Don't retry invalid API calls
+                elif 'note' in error_msg and 'frequency' in error_msg:
+                    logger.warning(f"Alpha Vantage: API frequency limit reached for {symbol_upper}. Waiting 60s...")
+                    await asyncio.sleep(60)
+                else:
+                    logger.error(f"Alpha Vantage: Value error for {symbol_upper}: {str(e)}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep((2 ** attempt) * 15)
             except Exception as e:
-                logger.error(f"Alpha Vantage fetch attempt {attempt + 1} for {symbol_upper} failed: {str(e)}", exc_info=True)
-                if "api key" in str(e).lower() or "invalid API call" in str(e).lower():
-                    logger.error("Alpha Vantage API key issue or invalid call. Breaking retry loop.")
-                    break 
-                if attempt < max_retries - 1:
-                    await asyncio.sleep((2 ** attempt) * 20)
+                error_msg = str(e).lower()
+                if 'api key' in error_msg or 'invalid api' in error_msg:
+                    logger.error(f"Alpha Vantage: API key issue or invalid call for {symbol_upper}. Breaking retry loop.")
+                    break
+                elif 'rate limit' in error_msg or 'too many' in error_msg:
+                    logger.warning(f"Alpha Vantage: Rate limited for {symbol_upper}. Waiting 60s...")
+                    await asyncio.sleep(60)
+                elif 'connection' in error_msg or 'timeout' in error_msg:
+                    logger.error(f"Alpha Vantage: Connection/timeout error for {symbol_upper}: {str(e)}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep((2 ** attempt) * 20)
+                else:
+                    logger.error(f"Alpha Vantage fetch attempt {attempt + 1} for {symbol_upper} failed: {str(e)}", exc_info=True)
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep((2 ** attempt) * 20)
             
         logger.warning(f"Failed to fetch sufficient data from Alpha Vantage for {symbol_upper} after {max_retries} attempts.")
         return None

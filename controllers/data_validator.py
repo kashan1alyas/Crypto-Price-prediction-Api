@@ -117,8 +117,10 @@ class DataValidator:
             
             # 1. Check minimum required samples with reduced requirements for demo API
             min_samples = TIMEFRAME_MAP[self.timeframe].get('min_samples', settings.MIN_DATA_POINTS)
-            if self.timeframe == "1h":
-                min_samples = min(min_samples, 500)  # Reduced requirement for hourly data
+            if self.timeframe == "30m":
+                min_samples = min(min_samples, 300)  # Reduced requirement for 30m data
+            elif self.timeframe == "1h":
+                min_samples = min(min_samples, 300)  # Reduced requirement for hourly data
             elif self.timeframe == "4h":
                 min_samples = min(min_samples, 250)  # Reduced requirement for 4h data
             elif self.timeframe == "24h":

@@ -17,7 +17,7 @@ TIMEFRAME_MAP = {
         "bb_window": 10,
         "momentum_window": 5,
         "rsi_window": 14,
-        "min_samples": 672  # 7 days * 24 hours/day * 2 samples/hour (for 30m interval)
+        "min_samples": 400  # Reduced: ~6 days of 30m data (was 672)
     },
     "1h": {
         "period": "30d",
@@ -35,7 +35,7 @@ TIMEFRAME_MAP = {
         "bb_window": 20,
         "momentum_window": 10,
         "rsi_window": 14,
-        "min_samples": 720  # 30 days * 24 hours/day
+        "min_samples": 400  # Reduced: ~17 days of hourly data (was 720)
     },
     "4h": {
         "period": "90d",
@@ -53,7 +53,7 @@ TIMEFRAME_MAP = {
         "bb_window": 10,
         "momentum_window": 5,
         "rsi_window": 14,
-        "min_samples": 270  # 45 days * 6 samples/day (for 4h interval)
+        "min_samples": 300  # Reduced: ~50 days of 4h data (was 270/540)
     },
     "24h": {
         "period": "365d",
@@ -71,6 +71,6 @@ TIMEFRAME_MAP = {
         "bb_window": 20,
         "momentum_window": 14,
         "rsi_window": 14,
-        "min_samples": 365  # 365 days
+        "min_samples": 300  # Reduced: ~10 months of daily data (was 365/700)
     }
 } 

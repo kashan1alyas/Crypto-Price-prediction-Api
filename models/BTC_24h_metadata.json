@@ -1,0 +1,12 @@
+{
+  "symbol": "BTC",
+  "timeframe": "24h",
+  "training_date": "2026-08-27T23:43:04.451790",
+  "data_points": 672,
+  "validation_metrics": {
+    "rmse": 0.02523995245754173,
+    "r2": -0.13795197010040283,
+    "mape": 292.3637866973877
+  },
+  "model_path": "C:\\Users\\Lenovo\\ai2\\models\\BTC\\model_24h.pth"
+}

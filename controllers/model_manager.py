@@ -8,6 +8,11 @@ from typing import Dict, Optional
 import torch
 import hashlib
 
+
+def _unwrap_model(model):
+    """Return the underlying module if wrapped by torch.compile."""
+    return getattr(model, "_orig_mod", model)
+
 logger = logging.getLogger(__name__)
 
 class ModelManager:
@@ -87,7 +92,7 @@ class ModelManager:
             
             # Save model
             torch.save({
-                'model_state_dict': model.state_dict(),
+                'model_state_dict': _unwrap_model(model).state_dict(),
                 'version_info': version,
                 'metrics': metrics
             }, model_path)
